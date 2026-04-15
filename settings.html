@@ -1,0 +1,78 @@
+<div>
+    <label class="text-sm font-medium text-gray-400 mb-2 block">NAM Tone Engine</label>
+    <p class="text-xs text-gray-500 mb-3">
+        Process your guitar through Neural Amp Modeler amp models and cabinet IRs
+        directly in the browser. Requires a USB audio interface. Click the AMP button
+        in the player controls to enable during playback.
+    </p>
+
+    <!-- Input Device -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">Input Device</label>
+        <select id="nam-device-select" onchange="namSelectDevice(this.value)" onfocus="namPopulateDevices()"
+            class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+            <option value="">Default</option>
+        </select>
+    </div>
+
+    <!-- Input Channel -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">Input Channel</label>
+        <select id="nam-channel-select" onchange="namSelectChannel(this.value)"
+            class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+            <option value="mono">Mono (mix)</option>
+            <option value="left">Left only</option>
+            <option value="right">Right only</option>
+        </select>
+    </div>
+
+    <!-- Input Gain -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">
+            Input Gain: <span id="nam-input-gain-label">1.0</span>
+        </label>
+        <input type="range" id="nam-input-gain-slider" min="0.1" max="10" step="0.1" value="1.0"
+            oninput="namSetInputGain(this.value)"
+            class="w-full accent-accent">
+    </div>
+
+    <!-- Output Gain -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">
+            Output Gain: <span id="nam-output-gain-label">0.50</span>
+        </label>
+        <input type="range" id="nam-output-gain-slider" min="0" max="2" step="0.05" value="0.5"
+            oninput="namSetOutputGain(this.value)"
+            class="w-full accent-accent">
+    </div>
+
+    <!-- Noise Gate Threshold -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">
+            Noise Gate: <span id="nam-gate-label">-60 dB</span>
+        </label>
+        <input type="range" id="nam-gate-slider" min="-96" max="0" step="1" value="-60"
+            oninput="namSetGateThreshold(this.value)"
+            class="w-full accent-accent">
+    </div>
+
+    <!-- Latency Offset -->
+    <div class="mt-3">
+        <label class="text-xs font-medium text-gray-400 mb-1 block">
+            Latency Offset: <span id="nam-latency-label">0 ms</span>
+        </label>
+        <input type="range" id="nam-latency-slider" min="-50" max="50" step="1" value="0"
+            oninput="namSetLatencyOffset(this.value)"
+            class="w-full accent-accent">
+    </div>
+
+    <!-- Guitar Stem Ducking -->
+    <div class="flex items-center gap-3 mt-3">
+        <label class="flex items-center gap-2 text-sm text-gray-300">
+            <input type="checkbox" id="nam-duck-guitar" checked
+                   onchange="namSetDuckGuitar(this.checked)"
+                   class="accent-accent">
+            Auto-mute guitar stem when AMP is active
+        </label>
+    </div>
+</div>
