@@ -73,6 +73,27 @@ function _namLoadSettings() {
 
 _namLoadSettings();
 
+// ── Mixer fader registration (slopsmith#87) ────────────────────────────────
+
+function _namRegisterFader() {
+    const api = window.slopsmith && window.slopsmith.audio;
+    if (!api || typeof api.registerFader !== 'function') return;
+    api.registerFader({
+        id: 'nam',
+        label: 'Amp (NAM)',
+        min: 0, max: 2, step: 0.05,
+        defaultValue: _namOutputGainVal,
+        getValue: () => _namOutputGainVal,
+        setValue: (v) => window.namSetOutputGain(v),
+    });
+}
+
+if (window.slopsmith && window.slopsmith.audio) {
+    _namRegisterFader();
+} else {
+    window.addEventListener('slopsmith:audio:ready', _namRegisterFader, { once: true });
+}
+
 // ── Audio Graph ────────────────────────────────────────────────────────────
 
 async function _namBuildGraph() {
