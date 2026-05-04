@@ -31,6 +31,11 @@ let _namDeviceId = '';
 let _namChannel = 'mono';      // 'mono' | 'left' | 'right'
 let _namInputGainVal = 1.0;
 let _namOutputGainVal = 0.5;
+// Mirrors the above, but only updated by explicit user actions (not presets).
+// _namSaveSettings() persists these so preset-applied transient gains never
+// overwrite what the user last intentionally saved.
+let _namSavedInputGainVal = 1.0;
+let _namSavedOutputGainVal = 0.5;
 let _namGateThreshold = -60;   // dBFS
 let _namLatencyOffset = 0.0;
 let _namDuckGuitar = true;
@@ -45,8 +50,8 @@ function _namSaveSettings() {
         localStorage.setItem(_namStorageKey, JSON.stringify({
             deviceId: _namDeviceId,
             channel: _namChannel,
-            inputGain: _namInputGainVal,
-            outputGain: _namOutputGainVal,
+            inputGain: _namSavedInputGainVal,
+            outputGain: _namSavedOutputGainVal,
             gateThreshold: _namGateThreshold,
             latencyOffset: _namLatencyOffset,
             duckGuitar: _namDuckGuitar,
@@ -62,8 +67,8 @@ function _namLoadSettings() {
         const s = JSON.parse(raw);
         if (s.deviceId !== undefined) _namDeviceId = s.deviceId;
         if (s.channel) _namChannel = s.channel;
-        if (s.inputGain !== undefined) _namInputGainVal = s.inputGain;
-        if (s.outputGain !== undefined) _namOutputGainVal = s.outputGain;
+        if (s.inputGain !== undefined) _namInputGainVal = _namSavedInputGainVal = s.inputGain;
+        if (s.outputGain !== undefined) _namOutputGainVal = _namSavedOutputGainVal = s.outputGain;
         if (s.gateThreshold !== undefined) _namGateThreshold = s.gateThreshold;
         if (s.latencyOffset !== undefined) _namLatencyOffset = s.latencyOffset;
         if (s.duckGuitar !== undefined) _namDuckGuitar = s.duckGuitar;
@@ -797,6 +802,8 @@ function _namApplyInputGain(val) {
     if (_namInputGain) _namInputGain.gain.value = _namInputGainVal;
     const label = document.getElementById('nam-input-gain-label');
     if (label) label.textContent = _namInputGainVal.toFixed(1);
+    const slider = document.getElementById('nam-input-gain-slider');
+    if (slider) slider.value = _namInputGainVal;
 }
 
 function _namApplyOutputGain(val) {
@@ -804,6 +811,8 @@ function _namApplyOutputGain(val) {
     if (_namOutputGain) _namOutputGain.gain.value = _namOutputGainVal;
     const label = document.getElementById('nam-output-gain-label');
     if (label) label.textContent = _namOutputGainVal.toFixed(2);
+    const slider = document.getElementById('nam-output-gain-slider');
+    if (slider) slider.value = _namOutputGainVal;
 }
 
 window.namSelectDevice = function(deviceId) {
@@ -818,11 +827,13 @@ window.namSelectChannel = function(channel) {
 
 window.namSetInputGain = function(val) {
     _namApplyInputGain(val);
+    _namSavedInputGainVal = _namInputGainVal;
     _namSaveSettings();
 };
 
 window.namSetOutputGain = function(val) {
     _namApplyOutputGain(val);
+    _namSavedOutputGainVal = _namOutputGainVal;
     _namSaveSettings();
 };
 
