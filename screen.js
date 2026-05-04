@@ -31,6 +31,11 @@ let _namDeviceId = '';
 let _namChannel = 'mono';      // 'mono' | 'left' | 'right'
 let _namInputGainVal = 1.0;
 let _namOutputGainVal = 0.5;
+// Mirrors the above, but only updated by explicit user actions (not presets).
+// _namSaveSettings() persists these so preset-applied transient gains never
+// overwrite what the user last intentionally saved.
+let _namSavedInputGainVal = 1.0;
+let _namSavedOutputGainVal = 0.5;
 let _namGateThreshold = -60;   // dBFS
 let _namLatencyOffset = 0.0;
 let _namDuckGuitar = true;
@@ -45,8 +50,8 @@ function _namSaveSettings() {
         localStorage.setItem(_namStorageKey, JSON.stringify({
             deviceId: _namDeviceId,
             channel: _namChannel,
-            inputGain: _namInputGainVal,
-            outputGain: _namOutputGainVal,
+            inputGain: _namSavedInputGainVal,
+            outputGain: _namSavedOutputGainVal,
             gateThreshold: _namGateThreshold,
             latencyOffset: _namLatencyOffset,
             duckGuitar: _namDuckGuitar,
@@ -62,8 +67,8 @@ function _namLoadSettings() {
         const s = JSON.parse(raw);
         if (s.deviceId !== undefined) _namDeviceId = s.deviceId;
         if (s.channel) _namChannel = s.channel;
-        if (s.inputGain !== undefined) _namInputGainVal = s.inputGain;
-        if (s.outputGain !== undefined) _namOutputGainVal = s.outputGain;
+        if (s.inputGain !== undefined) _namInputGainVal = _namSavedInputGainVal = s.inputGain;
+        if (s.outputGain !== undefined) _namOutputGainVal = _namSavedOutputGainVal = s.outputGain;
         if (s.gateThreshold !== undefined) _namGateThreshold = s.gateThreshold;
         if (s.latencyOffset !== undefined) _namLatencyOffset = s.latencyOffset;
         if (s.duckGuitar !== undefined) _namDuckGuitar = s.duckGuitar;
@@ -72,6 +77,31 @@ function _namLoadSettings() {
 }
 
 _namLoadSettings();
+
+// ── Mixer fader registration (slopsmith#87) ────────────────────────────────
+
+function _namRegisterFader() {
+    const api = window.slopsmith && window.slopsmith.audio;
+    if (!api) return;
+    if (typeof api.registerFader !== 'function') {
+        window.addEventListener('slopsmith:audio:ready', _namRegisterFader, { once: true });
+        return;
+    }
+    api.registerFader({
+        id: 'nam',
+        label: 'Amp (NAM)',
+        min: 0, max: 2, step: 0.05,
+        defaultValue: _namOutputGainVal,
+        getValue: () => _namOutputGainVal,
+        setValue: (v) => window.namSetOutputGain(v),
+    });
+}
+
+if (window.slopsmith && window.slopsmith.audio) {
+    _namRegisterFader();
+} else {
+    window.addEventListener('slopsmith:audio:ready', _namRegisterFader, { once: true });
+}
 
 // ── Audio Graph ────────────────────────────────────────────────────────────
 
@@ -296,9 +326,10 @@ function _namBypassIR() {
 async function _namApplyPreset(preset) {
     _namCurrentPreset = preset;
 
-    // Apply gains
-    if (_namInputGain) _namInputGain.gain.value = preset.input_gain || _namInputGainVal;
-    if (_namOutputGain) _namOutputGain.gain.value = preset.output_gain || _namOutputGainVal;
+    // Apply gains without persisting to localStorage — preset gains are
+    // transient and should not overwrite the user's saved global gains.
+    if (preset.input_gain !== undefined) _namApplyInputGain(preset.input_gain);
+    if (preset.output_gain !== undefined) _namApplyOutputGain(preset.output_gain);
 
     // Apply gate threshold
     if (_namWorkletNode && preset.gate_threshold !== undefined) {
@@ -763,6 +794,27 @@ window.namEditSong = async function(encodedFilename, displayName) {
 
 // ── Settings Widget Handlers ───────────────────────────────────────────────
 
+// Internal helpers: update the cached value, GainNode, and UI label without
+// persisting to localStorage. Used by _namApplyPreset so tone/preset changes
+// don't overwrite the user's saved global gains.
+function _namApplyInputGain(val) {
+    _namInputGainVal = parseFloat(val);
+    if (_namInputGain) _namInputGain.gain.value = _namInputGainVal;
+    const label = document.getElementById('nam-input-gain-label');
+    if (label) label.textContent = _namInputGainVal.toFixed(1);
+    const slider = document.getElementById('nam-input-gain-slider');
+    if (slider) slider.value = _namInputGainVal;
+}
+
+function _namApplyOutputGain(val) {
+    _namOutputGainVal = parseFloat(val);
+    if (_namOutputGain) _namOutputGain.gain.value = _namOutputGainVal;
+    const label = document.getElementById('nam-output-gain-label');
+    if (label) label.textContent = _namOutputGainVal.toFixed(2);
+    const slider = document.getElementById('nam-output-gain-slider');
+    if (slider) slider.value = _namOutputGainVal;
+}
+
 window.namSelectDevice = function(deviceId) {
     _namDeviceId = deviceId;
     _namSaveSettings();
@@ -774,19 +826,15 @@ window.namSelectChannel = function(channel) {
 };
 
 window.namSetInputGain = function(val) {
-    _namInputGainVal = parseFloat(val);
-    if (_namInputGain) _namInputGain.gain.value = _namInputGainVal;
+    _namApplyInputGain(val);
+    _namSavedInputGainVal = _namInputGainVal;
     _namSaveSettings();
-    const label = document.getElementById('nam-input-gain-label');
-    if (label) label.textContent = _namInputGainVal.toFixed(1);
 };
 
 window.namSetOutputGain = function(val) {
-    _namOutputGainVal = parseFloat(val);
-    if (_namOutputGain) _namOutputGain.gain.value = _namOutputGainVal;
+    _namApplyOutputGain(val);
+    _namSavedOutputGainVal = _namOutputGainVal;
     _namSaveSettings();
-    const label = document.getElementById('nam-output-gain-label');
-    if (label) label.textContent = _namOutputGainVal.toFixed(2);
 };
 
 window.namSetGateThreshold = function(val) {
