@@ -77,7 +77,11 @@ _namLoadSettings();
 
 function _namRegisterFader() {
     const api = window.slopsmith && window.slopsmith.audio;
-    if (!api || typeof api.registerFader !== 'function') return;
+    if (!api) return;
+    if (typeof api.registerFader !== 'function') {
+        window.addEventListener('slopsmith:audio:ready', _namRegisterFader, { once: true });
+        return;
+    }
     api.registerFader({
         id: 'nam',
         label: 'Amp (NAM)',
@@ -317,11 +321,10 @@ function _namBypassIR() {
 async function _namApplyPreset(preset) {
     _namCurrentPreset = preset;
 
-    // Apply gains. Route through the public setters so the cached scalar
-    // values, GainNodes, persisted settings, in-settings labels, AND the
-    // mixer fader (slopsmith#87) all stay in sync with what's audible.
-    if (preset.input_gain !== undefined) window.namSetInputGain(preset.input_gain);
-    if (preset.output_gain !== undefined) window.namSetOutputGain(preset.output_gain);
+    // Apply gains without persisting to localStorage — preset gains are
+    // transient and should not overwrite the user's saved global gains.
+    if (preset.input_gain !== undefined) _namApplyInputGain(preset.input_gain);
+    if (preset.output_gain !== undefined) _namApplyOutputGain(preset.output_gain);
 
     // Apply gate threshold
     if (_namWorkletNode && preset.gate_threshold !== undefined) {
@@ -786,6 +789,23 @@ window.namEditSong = async function(encodedFilename, displayName) {
 
 // ── Settings Widget Handlers ───────────────────────────────────────────────
 
+// Internal helpers: update the cached value, GainNode, and UI label without
+// persisting to localStorage. Used by _namApplyPreset so tone/preset changes
+// don't overwrite the user's saved global gains.
+function _namApplyInputGain(val) {
+    _namInputGainVal = parseFloat(val);
+    if (_namInputGain) _namInputGain.gain.value = _namInputGainVal;
+    const label = document.getElementById('nam-input-gain-label');
+    if (label) label.textContent = _namInputGainVal.toFixed(1);
+}
+
+function _namApplyOutputGain(val) {
+    _namOutputGainVal = parseFloat(val);
+    if (_namOutputGain) _namOutputGain.gain.value = _namOutputGainVal;
+    const label = document.getElementById('nam-output-gain-label');
+    if (label) label.textContent = _namOutputGainVal.toFixed(2);
+}
+
 window.namSelectDevice = function(deviceId) {
     _namDeviceId = deviceId;
     _namSaveSettings();
@@ -797,19 +817,13 @@ window.namSelectChannel = function(channel) {
 };
 
 window.namSetInputGain = function(val) {
-    _namInputGainVal = parseFloat(val);
-    if (_namInputGain) _namInputGain.gain.value = _namInputGainVal;
+    _namApplyInputGain(val);
     _namSaveSettings();
-    const label = document.getElementById('nam-input-gain-label');
-    if (label) label.textContent = _namInputGainVal.toFixed(1);
 };
 
 window.namSetOutputGain = function(val) {
-    _namOutputGainVal = parseFloat(val);
-    if (_namOutputGain) _namOutputGain.gain.value = _namOutputGainVal;
+    _namApplyOutputGain(val);
     _namSaveSettings();
-    const label = document.getElementById('nam-output-gain-label');
-    if (label) label.textContent = _namOutputGainVal.toFixed(2);
 };
 
 window.namSetGateThreshold = function(val) {
