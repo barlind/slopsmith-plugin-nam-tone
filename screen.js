@@ -320,8 +320,8 @@ async function _namApplyPreset(preset) {
     // Apply gains. Route through the public setters so the cached scalar
     // values, GainNodes, persisted settings, in-settings labels, AND the
     // mixer fader (slopsmith#87) all stay in sync with what's audible.
-    if (preset.input_gain) window.namSetInputGain(preset.input_gain);
-    if (preset.output_gain) window.namSetOutputGain(preset.output_gain);
+    if (preset.input_gain !== undefined) window.namSetInputGain(preset.input_gain);
+    if (preset.output_gain !== undefined) window.namSetOutputGain(preset.output_gain);
 
     // Apply gate threshold
     if (_namWorkletNode && preset.gate_threshold !== undefined) {
