@@ -172,7 +172,13 @@ async function _namApplyNativeDeviceSettings(api, settings, restartWhenActive) {
 async function _namApplySavedNativeDevice(api) {
     const saved = _namLoadNativeDeviceSettings();
     if (!saved) return false;
-    return _namApplyNativeDeviceSettings(api, saved, _namEnabled);
+    return _namApplyNativeDeviceSettings(api, saved, _namEnabled && _namNativeMode);
+}
+
+function _namSetNativeGain(kind, value) {
+    const api = _namDesktopAudio();
+    if (!_namNativeMode || !api || typeof api.setGain !== 'function') return;
+    api.setGain(kind, value).catch(e => console.warn(`[NAM] Native ${kind} gain update failed:`, e));
 }
 
 function _namNativeInputChannel() {
@@ -1131,6 +1137,7 @@ window.namStartProfileTest = async function(presetId) {
         } else {
             await _namBuildGraph();
         }
+        _namDuckGuitarStem();
         _namUpdateStatus();
     } catch (e) {
         console.error('[NAM] Profile tone test failed:', e);
@@ -1356,7 +1363,7 @@ window.namApplyNativeDevice = async function() {
 
     _namSetNativeDeviceStatus('Applying...');
     const settings = _namNativeDeviceFormValues();
-    const ok = await _namApplyNativeDeviceSettings(api, settings, _namEnabled);
+    const ok = await _namApplyNativeDeviceSettings(api, settings, _namEnabled && _namNativeMode);
     if (!ok) {
         _namSetNativeDeviceStatus('Failed', 'error');
         return;
@@ -1384,12 +1391,14 @@ window.namSelectChannel = function(channel) {
 
 window.namSetInputGain = function(val) {
     _namApplyInputGain(val);
+    _namSetNativeGain('input', _namInputGainVal);
     _namSavedInputGainVal = _namInputGainVal;
     _namSaveSettings();
 };
 
 window.namSetOutputGain = function(val) {
     _namApplyOutputGain(val);
+    _namSetNativeGain('output', _namOutputGainVal);
     _namSavedOutputGainVal = _namOutputGainVal;
     _namSaveSettings();
 };
