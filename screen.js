@@ -162,11 +162,12 @@ async function _namApplyNativeDeviceSettings(api, settings, restartWhenActive) {
     if (wasRunning && typeof api.stopAudio === 'function') await api.stopAudio();
     if (type) await api.setDeviceType(type);
     const ok = await api.setDevice(input, output, sampleRate, bufferSize);
+    if (!ok) return false;
     if ((wasRunning || restartWhenActive) && typeof api.startAudio === 'function') {
         await api.startAudio();
         if (!wasRunning && restartWhenActive) _namNativeStartedAudio = true;
     }
-    return !!ok;
+    return true;
 }
 
 async function _namApplySavedNativeDevice(api) {
@@ -752,15 +753,24 @@ async function _namRestoreTestBackup() {
     _namTestBackup = null;
     if (!backup) return;
 
+    _namRestoreTestContext(backup);
+    _namEnabled = !!backup.enabled;
+
+    if (_namEnabled && _namCurrentPreset) {
+        if (_namGraphActive()) {
+            await _namApplyPreset(_namCurrentPreset);
+        } else {
+            await _namBuildGraph();
+            _namDuckGuitarStem();
+        }
+    }
+}
+
+function _namRestoreTestContext(backup) {
     _namCurrentFilename = backup.currentFilename;
     _namMappings = backup.mappings || {};
     _namCurrentTone = backup.currentTone;
     _namCurrentPreset = backup.currentPreset;
-    _namEnabled = !!backup.enabled;
-
-    if (_namEnabled && _namCurrentPreset && _namGraphActive()) {
-        await _namApplyPreset(_namCurrentPreset);
-    }
 }
 
 function _namRestoreGuitarStem() {
@@ -827,6 +837,10 @@ function _namInjectButton() {
 function _namToggle() {
     _namEnabled = !_namEnabled;
     if (!_namEnabled) {
+        if (_namTestBackup) {
+            _namRestoreTestContext(_namTestBackup);
+            _namTestBackup = null;
+        }
         _namTestMode = false;
         _namTestPresetId = null;
     }
