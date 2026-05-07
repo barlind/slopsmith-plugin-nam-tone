@@ -8,7 +8,7 @@ Play through Neural Amp Modeler (NAM) amp models and cabinet impulse responses f
 
 Browser mode:
 
-```
+```text
 Guitar (USB interface) → getUserMedia
   → Input Gain
   → NAM AudioWorklet (WASM amp model inference)
@@ -19,7 +19,7 @@ Guitar (USB interface) → getUserMedia
 
 Slopsmith Desktop native mode:
 
-```
+```text
 Guitar (Desktop audio device)
   → Slopsmith Desktop native audio engine
   → NAM processor

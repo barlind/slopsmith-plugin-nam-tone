@@ -109,14 +109,18 @@ def setup(app, context):
 
     @app.post("/api/plugins/nam_tone/models")
     async def upload_model(file: UploadFile = File(...)):
-        dest = _require_models_dir() / file.filename
+        dest = _safe_child(_require_models_dir(), file.filename)
+        if dest is None:
+            return Response("invalid filename", status_code=400)
         data = await file.read()
         dest.write_bytes(data)
         return {"ok": True, "name": file.filename, "size": len(data)}
 
     @app.delete("/api/plugins/nam_tone/models/{name:path}")
     def delete_model(name: str):
-        path = _require_models_dir() / name
+        path = _safe_child(_require_models_dir(), name)
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if path.exists():
             path.unlink()
         return {"ok": True}
@@ -136,7 +140,9 @@ def setup(app, context):
     @app.post("/api/plugins/nam_tone/irs")
     async def upload_ir(file: UploadFile = File(...)):
         import subprocess, tempfile
-        dest = _require_irs_dir() / file.filename
+        dest = _safe_child(_require_irs_dir(), file.filename)
+        if dest is None:
+            return Response("invalid filename", status_code=400)
         data = await file.read()
         # Convert to browser-compatible WAV (PCM float32, 48kHz mono)
         # decodeAudioData is picky about formats; ffmpeg normalizes it
@@ -162,7 +168,9 @@ def setup(app, context):
 
     @app.delete("/api/plugins/nam_tone/irs/{name:path}")
     def delete_ir(name: str):
-        path = _require_irs_dir() / name
+        path = _safe_child(_require_irs_dir(), name)
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if path.exists():
             path.unlink()
         return {"ok": True}
@@ -352,14 +360,16 @@ def setup(app, context):
     @app.get("/api/plugins/nam_tone/file/{file_type}/{name:path}")
     def serve_file(file_type: str, name: str):
         if file_type == "model":
-            path = _require_models_dir() / name
+            path = _safe_child(_require_models_dir(), name)
             mt = "application/json"
         elif file_type == "ir":
-            path = _require_irs_dir() / name
+            path = _safe_child(_require_irs_dir(), name)
             mt = "audio/wav"
         else:
             return Response("invalid type", status_code=400)
 
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if not path.exists():
             return Response("not found", status_code=404)
         return FileResponse(str(path), media_type=mt)
@@ -367,7 +377,9 @@ def setup(app, context):
     @app.get("/api/plugins/nam_tone/worklet/{filename:path}")
     def serve_worklet(filename: str):
         for subdir in ["worklet", "wasm"]:
-            path = _plugin_dir / subdir / filename
+            path = _safe_child(_plugin_dir / subdir, filename)
+            if path is None:
+                continue
             if path.exists():
                 ext = path.suffix
                 mt = {

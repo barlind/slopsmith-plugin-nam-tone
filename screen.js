@@ -47,6 +47,7 @@ let _namDuckGuitar = true;
 let _namDefaultPresetId = null;
 let _namTestMode = false;
 let _namTestPresetId = null;
+let _namTestBackup = null;
 
 const _namStorageKey = 'slopsmith_nam_tone';
 const _namNativeDeviceStorageKey = 'slopsmith-audio-device';
@@ -203,6 +204,21 @@ async function _namRefreshNativeLatency(api) {
         `bufferSize=${device && device.blockSize ? device.blockSize : 'unknown'}`);
 }
 
+async function _namResetNativeAfterFailure(api) {
+    if (!api) return;
+    try {
+        if (typeof api.clearChain === 'function') await api.clearChain();
+        if (typeof api.setMonitorMute === 'function') await api.setMonitorMute(true);
+        if (_namNativeStartedAudio && typeof api.stopAudio === 'function') await api.stopAudio();
+    } catch (e) {
+        console.warn('[NAM] Native cleanup after failure failed:', e);
+    }
+    _namNativeMode = false;
+    _namNativeReady = false;
+    _namNativeLatencyText = null;
+    _namNativeStartedAudio = false;
+}
+
 async function _namApplyNativePreset(preset, api) {
     _namCurrentPreset = preset;
     _namNativeMode = true;
@@ -352,10 +368,19 @@ if (window.slopsmith && window.slopsmith.audio) {
 async function _namBuildGraph() {
     const nativeApi = _namDesktopAudio();
     if (nativeApi && await _namDesktopAudioAvailable(nativeApi)) {
-        await _namBuildNativeGraph(nativeApi);
-        return;
+        try {
+            await _namBuildNativeGraph(nativeApi);
+            return;
+        } catch (e) {
+            console.warn('[NAM] Native desktop graph failed; falling back to browser WASM:', e);
+            await _namResetNativeAfterFailure(nativeApi);
+        }
     }
 
+    await _namBuildWasmGraph();
+}
+
+async function _namBuildWasmGraph() {
     _namNativeMode = false;
     _namNativeReady = false;
     _namNativeLatencyText = null;
@@ -471,14 +496,14 @@ async function _namBuildGraph() {
 
     // If we have a preset, apply it
     if (_namCurrentPreset) {
-        await _namApplyPreset(_namCurrentPreset);
+        await _namApplyWasmPreset(_namCurrentPreset);
     } else if (_namDefaultPresetId) {
         // Try loading default preset
         try {
             const resp = await fetch('/api/plugins/nam_tone/presets');
             const presets = await resp.json();
             const def = presets.find(p => p.id === _namDefaultPresetId);
-            if (def) await _namApplyPreset(def);
+            if (def) await _namApplyWasmPreset(def);
         } catch (e) { /* ignore */ }
     }
 
@@ -486,7 +511,7 @@ async function _namBuildGraph() {
 
     // Re-apply preset now that graph is ready (tone interval may have fired during build)
     if (_namCurrentPreset) {
-        await _namApplyPreset(_namCurrentPreset);
+        await _namApplyWasmPreset(_namCurrentPreset);
     }
 
     console.log('[NAM] Audio graph built, latency:',
@@ -580,10 +605,23 @@ function _namBypassIR() {
 async function _namApplyPreset(preset) {
     const nativeApi = _namDesktopAudio();
     if (nativeApi && await _namDesktopAudioAvailable(nativeApi)) {
-        await _namApplyNativePreset(preset, nativeApi);
-        return;
+        try {
+            await _namApplyNativePreset(preset, nativeApi);
+            return;
+        } catch (e) {
+            console.warn('[NAM] Native preset apply failed; falling back to browser WASM:', e);
+            await _namResetNativeAfterFailure(nativeApi);
+            if (!_namGraphActive()) {
+                await _namBuildWasmGraph();
+                return;
+            }
+        }
     }
 
+    await _namApplyWasmPreset(preset);
+}
+
+async function _namApplyWasmPreset(preset) {
     _namCurrentPreset = preset;
 
     // Apply gains without persisting to localStorage — preset gains are
@@ -692,6 +730,33 @@ function _namDuckGuitarStem() {
     }
 }
 
+function _namCaptureTestBackup() {
+    if (_namTestBackup) return;
+    _namTestBackup = {
+        enabled: _namEnabled,
+        currentFilename: _namCurrentFilename,
+        mappings: { ..._namMappings },
+        currentTone: _namCurrentTone,
+        currentPreset: _namCurrentPreset,
+    };
+}
+
+async function _namRestoreTestBackup() {
+    const backup = _namTestBackup;
+    _namTestBackup = null;
+    if (!backup) return;
+
+    _namCurrentFilename = backup.currentFilename;
+    _namMappings = backup.mappings || {};
+    _namCurrentTone = backup.currentTone;
+    _namCurrentPreset = backup.currentPreset;
+    _namEnabled = !!backup.enabled;
+
+    if (_namEnabled && _namCurrentPreset && _namGraphActive()) {
+        await _namApplyPreset(_namCurrentPreset);
+    }
+}
+
 function _namRestoreGuitarStem() {
     for (const d of _namDuckedStems) {
         if (d.stem.gain) {
@@ -761,11 +826,18 @@ function _namToggle() {
     }
     _namUpdateAmpButton();
     if (_namEnabled) {
-        _namBuildGraph().catch(e => {
+        _namBuildGraph().then(() => {
+            _namDuckGuitarStem();
+        }).catch(e => {
             _namBuilding = false;
+            _namEnabled = false;
+            _namRestoreGuitarStem();
+            _namTeardown();
+            _namUpdateAmpButton();
+            _namUpdatePresetTestButtons();
+            _namUpdateStatus();
             console.error('[NAM] Build failed:', e);
         });
-        _namDuckGuitarStem();
     } else {
         _namTeardown();
         _namUpdatePresetTestButtons();
@@ -1042,6 +1114,7 @@ window.namStartProfileTest = async function(presetId) {
         return;
     }
 
+    _namCaptureTestBackup();
     _namTestMode = true;
     _namTestPresetId = presetId;
     _namEnabled = true;
@@ -1063,11 +1136,12 @@ window.namStartProfileTest = async function(presetId) {
         console.error('[NAM] Profile tone test failed:', e);
         _namTestMode = false;
         _namTestPresetId = null;
-        _namEnabled = false;
         _namBuilding = false;
         _namTeardown();
+        await _namRestoreTestBackup();
         _namUpdateAmpButton();
         _namUpdatePresetTestButtons();
+        _namUpdateStatus();
     }
 };
 
@@ -1079,11 +1153,13 @@ window.namTestPreset = async function(presetId) {
     await window.namStartProfileTest(presetId);
 };
 
-window.namStopProfileTest = function() {
+window.namStopProfileTest = async function() {
     _namTestMode = false;
     _namTestPresetId = null;
-    _namEnabled = false;
-    _namTeardown();
+    const wasEnabled = _namTestBackup && _namTestBackup.enabled;
+    if (!wasEnabled) _namTeardown();
+    await _namRestoreTestBackup();
+    if (!wasEnabled) _namEnabled = false;
     _namUpdateAmpButton();
     _namUpdatePresetTestButtons();
     _namUpdateStatus();
