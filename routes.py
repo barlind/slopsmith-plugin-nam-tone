@@ -84,8 +84,25 @@ def _safe_child(root: Path, name: str | None):
     return path
 
 
+def _mapping_filenames(filename: str) -> list[str]:
+    """Return filename aliases that should share tone mappings.
+
+    Sloppak playback uses paths like "sloppak/boststar.sloppak" while the
+    same song is often mapped from the original PSARC filename
+    "boststar_p.psarc". Keep the exact filename first so direct mappings win.
+    """
+    names = [filename]
+    normalized = filename.replace("\\", "/")
+    if normalized.startswith("sloppak/") and normalized.lower().endswith(".sloppak"):
+        psarc_name = f"{Path(normalized).stem}_p.psarc"
+        if psarc_name not in names:
+            names.append(psarc_name)
+    return names
+
+
 def setup(app, context):
     global _db_path, _models_dir, _irs_dir
+    filename_aliases = context.get("filename_aliases") or _mapping_filenames
     config_dir = context["config_dir"]
     _db_path = str(config_dir / "nam_tone.db")
     models_dir = config_dir / "nam_models"
@@ -276,19 +293,28 @@ def setup(app, context):
     @app.get("/api/plugins/nam_tone/mappings/{filename:path}")
     def get_mappings(filename: str):
         conn = _get_conn()
+        filenames = filename_aliases(filename)
+        placeholders = ",".join("?" for _ in filenames)
         rows = conn.execute(
             "SELECT tm.id, tm.tone_key, tm.preset_id, p.name, p.model_file, p.ir_file, "
             "p.input_gain, p.output_gain, p.gate_threshold "
             "FROM tone_mappings tm JOIN presets p ON tm.preset_id = p.id "
-            "WHERE tm.filename = ? ORDER BY tm.tone_key",
-            (filename,)
+            f"WHERE tm.filename IN ({placeholders}) "
+            "ORDER BY CASE tm.filename WHEN ? THEN 0 ELSE 1 END, tm.tone_key",
+            (*filenames, filename)
         ).fetchall()
-        return [
-            {"id": r[0], "tone_key": r[1], "preset_id": r[2],
-             "preset_name": r[3], "model_file": r[4], "ir_file": r[5],
-             "input_gain": r[6], "output_gain": r[7], "gate_threshold": r[8]}
-            for r in rows
-        ]
+        mappings = []
+        seen_tones = set()
+        for r in rows:
+            if r[1] in seen_tones:
+                continue
+            seen_tones.add(r[1])
+            mappings.append({
+                "id": r[0], "tone_key": r[1], "preset_id": r[2],
+                "preset_name": r[3], "model_file": r[4], "ir_file": r[5],
+                "input_gain": r[6], "output_gain": r[7], "gate_threshold": r[8],
+            })
+        return mappings
 
     @app.post("/api/plugins/nam_tone/mappings/{filename:path}")
     def save_mapping(filename: str, data: dict):
@@ -319,11 +345,23 @@ def setup(app, context):
         if not dlc:
             return {"error": "DLC folder not configured"}
 
-        psarc_path = dlc / filename
-        if not psarc_path.exists():
-            return {"error": "File not found"}
+        candidate_names = filename_aliases(filename)
+        if filename.replace("\\", "/").lower().endswith(".sloppak"):
+            candidate_names = [n for n in candidate_names if n.lower().endswith(".psarc")] + [filename]
 
-        files = read_psarc_entries(str(psarc_path), ["*.json"])
+        files = None
+        for candidate_name in candidate_names:
+            candidate_path = dlc / candidate_name
+            if not candidate_path.exists():
+                continue
+            try:
+                files = read_psarc_entries(str(candidate_path), ["*.json"])
+                break
+            except ValueError:
+                continue
+        if files is None:
+            return {"error": "File not found or not a PSARC"}
+
         tones = []
         seen = set()
 

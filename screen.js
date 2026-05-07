@@ -23,12 +23,15 @@ let _namCurrentPreset = null;  // {id, name, model_file, ir_file, ...}
 let _namCurrentFilename = null;
 let _namMappings = {};         // tone_key -> preset object
 let _namCurrentTone = null;
+let _namToneApplyPending = false;
 let _namModelCache = {};       // model_file -> JSON string
 let _namIrCache = {};          // ir_file -> AudioBuffer
 let _namNativeMode = false;    // Slopsmith Desktop native audio engine path
 let _namNativeReady = false;
 let _namNativeLatencyText = null;
 let _namNativeStartedAudio = false;
+let _namNativeRecoverPending = false;
+let _namLastNativeRecoverAt = 0;
 let _namNativeDeviceTypes = [];
 
 // Settings (persisted in localStorage)
@@ -682,9 +685,156 @@ async function _namLoadMappings(filename) {
                         .catch(() => {});
                 }
             }
+            _namApplyCurrentSongTone(true).catch(e => console.warn('[NAM] Failed to apply active mapped tone:', e.message));
         }
     } catch (e) {
         console.warn('[NAM] Failed to load mappings:', e.message);
+    }
+}
+
+function _namReadyForToneApply() {
+    return _namNativeMode ? _namNativeReady : _namWasmReady;
+}
+
+function _namActiveToneName() {
+    if (!window.highway) return null;
+    try {
+        const t = highway.getTime();
+        const changes = highway.getToneChanges();
+        const base = highway.getToneBase();
+        let activeTone = base;
+
+        if (changes && changes.length) {
+            for (const tc of changes) {
+                if (tc.t <= t) {
+                    activeTone = tc.name;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        return activeTone || null;
+    } catch (e) {
+        console.warn('[NAM] Failed to read active song tone:', e.message);
+        return null;
+    }
+}
+
+function _namSamePreset(a, b) {
+    if (!a || !b) return false;
+    const aId = a.preset_id !== undefined ? a.preset_id : a.id;
+    const bId = b.preset_id !== undefined ? b.preset_id : b.id;
+    return aId !== undefined && bId !== undefined && String(aId) === String(bId);
+}
+
+function _namFindMappingForTone(toneName) {
+    if (!toneName) return null;
+    if (_namMappings[toneName]) return { tone: toneName, mapping: _namMappings[toneName] };
+
+    const wanted = String(toneName).trim().toLowerCase();
+    for (const [tone, mapping] of Object.entries(_namMappings)) {
+        if (String(tone).trim().toLowerCase() === wanted) {
+            return { tone, mapping };
+        }
+    }
+    return null;
+}
+
+function _namFallbackMappingForCurrentSong() {
+    const entries = Object.entries(_namMappings);
+    if (!entries.length) return null;
+
+    const songInfo = window.slopsmith && window.slopsmith.currentSong ? window.slopsmith.currentSong : {};
+    const arrangement = String(songInfo.arrangement || '').toLowerCase();
+    const preferred = [];
+
+    if (arrangement.includes('bass')) {
+        preferred.push('bass');
+    } else if (arrangement.includes('rhythm')) {
+        preferred.push('rhythm', 'dist', 'lead');
+    } else {
+        preferred.push('lead', 'dist', 'guitar');
+    }
+
+    for (const needle of preferred) {
+        const found = entries.find(([tone]) => String(tone).toLowerCase().includes(needle));
+        if (found) return { tone: found[0], mapping: found[1], fallback: true };
+    }
+
+    return { tone: entries[0][0], mapping: entries[0][1], fallback: true };
+}
+
+async function _namApplyCurrentSongTone(force = false) {
+    if (!_namEnabled || !_namCurrentFilename || _namBuilding || _namToneApplyPending) return false;
+    if (!_namReadyForToneApply() || Object.keys(_namMappings).length === 0) return false;
+
+    const activeTone = _namActiveToneName();
+    const selected = _namFindMappingForTone(activeTone) || _namFallbackMappingForCurrentSong();
+    if (!selected) return false;
+
+    const { tone, mapping, fallback } = selected;
+
+    if (!force && tone === _namCurrentTone && _namSamePreset(_namCurrentPreset, mapping)) {
+        return true;
+    }
+
+    _namToneApplyPending = true;
+    try {
+        await _namApplyPreset(mapping);
+        _namCurrentTone = tone;
+        console.log(`[NAM] Tone switch${fallback ? ' fallback' : ''}: ${tone} -> preset "${mapping.preset_name}"`);
+        return true;
+    } catch (e) {
+        console.warn('[NAM] Failed to apply mapped tone:', e.message || e);
+        return false;
+    } finally {
+        _namToneApplyPending = false;
+    }
+}
+
+async function _namEnsureNativeAlive() {
+    if (!_namEnabled || !_namNativeMode || !_namNativeReady || !_namCurrentPreset || _namNativeRecoverPending) return;
+
+    const now = Date.now();
+    if (now - _namLastNativeRecoverAt < 1500) return;
+    _namLastNativeRecoverAt = now;
+
+    const api = _namDesktopAudio();
+    if (!api) return;
+
+    _namNativeRecoverPending = true;
+    try {
+        let recovered = false;
+        if (typeof api.isAudioRunning === 'function') {
+            const running = await api.isAudioRunning().catch(() => true);
+            if (!running) {
+                await api.startAudio();
+                _namNativeStartedAudio = true;
+                recovered = true;
+            }
+        }
+        if (typeof api.isMonitorMuted === 'function') {
+            const muted = await api.isMonitorMuted().catch(() => false);
+            if (muted && typeof api.setMonitorMute === 'function') {
+                await api.setMonitorMute(false);
+                recovered = true;
+            }
+        }
+        if (typeof api.getChainState === 'function') {
+            const chain = await api.getChainState().catch(() => null);
+            if (Array.isArray(chain) && chain.length === 0) {
+                await _namApplyPreset(_namCurrentPreset);
+                recovered = true;
+            }
+        }
+        if (recovered) {
+            console.log('[NAM] Recovered native desktop audio path');
+        }
+    } catch (e) {
+        console.warn('[NAM] Native keep-alive failed:', e.message || e);
+    } finally {
+        _namNativeRecoverPending = false;
     }
 }
 
@@ -692,30 +842,8 @@ function _namCheckToneChange() {
     if (!_namEnabled || !_namCurrentFilename || _namBuilding) return;
     if ((_namNativeMode ? !_namNativeReady : !_namWasmReady) || Object.keys(_namMappings).length === 0) return;
 
-    const t = highway.getTime();
-    const changes = highway.getToneChanges();
-    const base = highway.getToneBase();
-
-    if (!changes || changes.length === 0) return;
-
-    // Find active tone at current time
-    let activeTone = base;
-    for (const tc of changes) {
-        if (tc.t <= t) {
-            activeTone = tc.name;
-        } else {
-            break;
-        }
-    }
-
-    if (activeTone && activeTone !== _namCurrentTone) {
-        _namCurrentTone = activeTone;
-        const mapping = _namMappings[activeTone];
-        if (mapping) {
-            _namApplyPreset(mapping);
-            console.log(`[NAM] Tone switch: ${activeTone} -> preset "${mapping.preset_name}"`);
-        }
-    }
+    _namEnsureNativeAlive();
+    _namApplyCurrentSongTone(false);
 }
 
 setInterval(_namCheckToneChange, 100);
@@ -756,12 +884,22 @@ async function _namRestoreTestBackup() {
     _namRestoreTestContext(backup);
     _namEnabled = !!backup.enabled;
 
-    if (_namEnabled && _namCurrentPreset) {
-        if (_namGraphActive()) {
-            await _namApplyPreset(_namCurrentPreset);
-        } else {
-            await _namBuildGraph();
-            _namDuckGuitarStem();
+    if (_namEnabled) {
+        let restored = await _namApplyCurrentSongTone(true);
+        if (!restored && _namCurrentPreset) {
+            if (_namGraphActive()) {
+                await _namApplyPreset(_namCurrentPreset);
+            } else {
+                await _namBuildGraph();
+                _namDuckGuitarStem();
+            }
+            restored = true;
+        }
+        if (!restored && _namGraphActive()) {
+            _namTeardown();
+            _namEnabled = true;
+            _namCurrentPreset = null;
+            _namCurrentTone = null;
         }
     }
 }
@@ -846,7 +984,8 @@ function _namToggle() {
     }
     _namUpdateAmpButton();
     if (_namEnabled) {
-        _namBuildGraph().then(() => {
+        _namBuildGraph().then(async () => {
+            await _namApplyCurrentSongTone(true);
             _namDuckGuitarStem();
         }).catch(e => {
             _namBuilding = false;
@@ -859,6 +998,8 @@ function _namToggle() {
             console.error('[NAM] Build failed:', e);
         });
     } else {
+        _namCurrentPreset = null;
+        _namCurrentTone = null;
         _namTeardown();
         _namUpdatePresetTestButtons();
     }
