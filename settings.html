@@ -2,8 +2,9 @@
     <label class="text-sm font-medium text-gray-400 mb-2 block">NAM Tone Engine</label>
     <p class="text-xs text-gray-500 mb-3">
         Process your guitar through Neural Amp Modeler amp models and cabinet IRs
-        directly in the browser. Requires a USB audio interface. Click the AMP button
-        in the player controls to enable during playback.
+        in the browser, or through Slopsmith Desktop's native audio engine when
+        available. Requires a USB audio interface. Click the AMP button in the
+        player controls to enable during playback.
     </p>
 
     <!-- Input Device -->
@@ -13,6 +14,57 @@
             class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
             <option value="">Default</option>
         </select>
+    </div>
+
+    <!-- Desktop Native Device -->
+    <div id="nam-native-device-section" class="hidden mt-4 border-t border-gray-800 pt-3">
+        <div class="flex items-center justify-between gap-3 mb-2">
+            <label class="text-xs font-medium text-gray-400 block">Desktop Native Device</label>
+            <span id="nam-native-device-status" class="text-[10px] text-gray-500">Not configured</span>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div>
+                <label class="text-[10px] text-gray-500 mb-1 block">Device Type</label>
+                <select id="nam-native-device-type" onchange="namSelectNativeDeviceType(this.value)" onfocus="namPopulateNativeDevices()"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="">Default</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[10px] text-gray-500 mb-1 block">Sample Rate</label>
+                <select id="nam-native-sample-rate" onfocus="namPopulateNativeDevices()"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="48000">48000</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[10px] text-gray-500 mb-1 block">Input</label>
+                <select id="nam-native-input-device" onfocus="namPopulateNativeDevices()"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="">Default</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[10px] text-gray-500 mb-1 block">Output</label>
+                <select id="nam-native-output-device" onfocus="namPopulateNativeDevices()"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="">Default</option>
+                </select>
+            </div>
+            <div>
+                <label class="text-[10px] text-gray-500 mb-1 block">Buffer Size</label>
+                <select id="nam-native-buffer-size" onfocus="namPopulateNativeDevices()"
+                    class="w-full bg-dark-700 border border-gray-800 rounded-lg px-3 py-2 text-xs text-gray-300 outline-none">
+                    <option value="256">256</option>
+                </select>
+            </div>
+            <div class="flex items-end">
+                <button type="button" onclick="namApplyNativeDevice()"
+                    class="w-full bg-dark-600 hover:bg-dark-500 rounded-lg px-3 py-2 text-xs text-gray-300 transition">
+                    Apply Native Device
+                </button>
+            </div>
+        </div>
     </div>
 
     <!-- Input Channel -->

@@ -25,6 +25,11 @@ let _namMappings = {};         // tone_key -> preset object
 let _namCurrentTone = null;
 let _namModelCache = {};       // model_file -> JSON string
 let _namIrCache = {};          // ir_file -> AudioBuffer
+let _namNativeMode = false;    // Slopsmith Desktop native audio engine path
+let _namNativeReady = false;
+let _namNativeLatencyText = null;
+let _namNativeStartedAudio = false;
+let _namNativeDeviceTypes = [];
 
 // Settings (persisted in localStorage)
 let _namDeviceId = '';
@@ -40,8 +45,247 @@ let _namGateThreshold = -60;   // dBFS
 let _namLatencyOffset = 0.0;
 let _namDuckGuitar = true;
 let _namDefaultPresetId = null;
+let _namTestMode = false;
+let _namTestPresetId = null;
 
 const _namStorageKey = 'slopsmith_nam_tone';
+const _namNativeDeviceStorageKey = 'slopsmith-audio-device';
+
+function _namDesktopAudio() {
+    const api = window.slopsmithDesktop && window.slopsmithDesktop.audio;
+    if (!api || typeof api.loadPreset !== 'function' || typeof api.startAudio !== 'function') return null;
+    if (typeof api.clearChain !== 'function') return null;
+    return api;
+}
+
+async function _namDesktopAudioAvailable(api) {
+    if (!api) return false;
+    if (typeof api.isAvailable !== 'function') return true;
+    try { return !!(await api.isAvailable()); } catch (_) { return false; }
+}
+
+function _namSupportsNativeDeviceSettings(api) {
+    return !!api
+        && typeof api.getDeviceTypes === 'function'
+        && typeof api.getCurrentDevice === 'function'
+        && typeof api.getSampleRates === 'function'
+        && typeof api.getBufferSizes === 'function'
+        && typeof api.setDeviceType === 'function'
+        && typeof api.setDevice === 'function';
+}
+
+function _namLoadNativeDeviceSettings() {
+    try {
+        const raw = localStorage.getItem(_namNativeDeviceStorageKey);
+        return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+}
+
+function _namSaveNativeDeviceSettings(settings) {
+    const existing = _namLoadNativeDeviceSettings() || {};
+    try {
+        localStorage.setItem(_namNativeDeviceStorageKey, JSON.stringify({
+            ...existing,
+            ...settings,
+            inputChannel: String(_namNativeInputChannel()),
+        }));
+    } catch (_) {}
+}
+
+function _namSetNativeDeviceStatus(text, kind = 'muted') {
+    const el = document.getElementById('nam-native-device-status');
+    if (!el) return;
+    const color = kind === 'ok' ? 'text-green-400' : kind === 'error' ? 'text-red-400' : 'text-gray-500';
+    el.className = `text-[10px] ${color}`;
+    el.textContent = text;
+}
+
+function _namSetSelectOptions(select, values, selectedValue, defaultLabel = null) {
+    if (!select) return;
+    const selected = selectedValue == null ? '' : String(selectedValue);
+    select.innerHTML = defaultLabel == null ? '' : `<option value="">${defaultLabel}</option>`;
+    const seen = new Set(defaultLabel == null ? [] : ['']);
+    for (const value of values || []) {
+        const normalized = String(value);
+        if (seen.has(normalized)) continue;
+        seen.add(normalized);
+        const opt = document.createElement('option');
+        opt.value = normalized;
+        opt.textContent = normalized;
+        select.appendChild(opt);
+    }
+    if (selected && !seen.has(selected)) {
+        const opt = document.createElement('option');
+        opt.value = selected;
+        opt.textContent = selected;
+        select.appendChild(opt);
+    }
+    select.value = selected;
+}
+
+function _namRenderNativeDeviceDropdowns(typeName, selectedInput = '', selectedOutput = '') {
+    const typeInfo = _namNativeDeviceTypes.find(t => t.name === typeName) || _namNativeDeviceTypes[0];
+    _namSetSelectOptions(document.getElementById('nam-native-input-device'), typeInfo ? typeInfo.inputs : [], selectedInput, 'Default');
+    _namSetSelectOptions(document.getElementById('nam-native-output-device'), typeInfo ? typeInfo.outputs : [], selectedOutput, 'Default');
+}
+
+function _namNativeDeviceFormValues() {
+    return {
+        type: document.getElementById('nam-native-device-type')?.value || '',
+        input: document.getElementById('nam-native-input-device')?.value || '',
+        output: document.getElementById('nam-native-output-device')?.value || '',
+        sampleRate: document.getElementById('nam-native-sample-rate')?.value || '48000',
+        bufferSize: document.getElementById('nam-native-buffer-size')?.value || '256',
+    };
+}
+
+async function _namApplyNativeDeviceSettings(api, settings, restartWhenActive) {
+    if (!_namSupportsNativeDeviceSettings(api) || !settings) return false;
+    const current = await api.getCurrentDevice().catch(() => null);
+    const type = settings.type || (current && current.type) || '';
+    const input = settings.input !== undefined ? settings.input : ((current && current.input) || '');
+    const output = settings.output !== undefined ? settings.output : ((current && current.output) || '');
+    const sampleRate = parseFloat(settings.sampleRate || (current && current.sampleRate) || 48000);
+    const bufferSize = parseInt(settings.bufferSize || (current && current.blockSize) || 256, 10);
+    const same = current
+        && (!type || type === current.type)
+        && input === (current.input || '')
+        && output === (current.output || '')
+        && Number(sampleRate) === Number(current.sampleRate)
+        && Number(bufferSize) === Number(current.blockSize);
+    if (same) return true;
+
+    const wasRunning = typeof api.isAudioRunning === 'function'
+        ? await api.isAudioRunning().catch(() => false)
+        : false;
+    if (wasRunning && typeof api.stopAudio === 'function') await api.stopAudio();
+    if (type) await api.setDeviceType(type);
+    const ok = await api.setDevice(input, output, sampleRate, bufferSize);
+    if ((wasRunning || restartWhenActive) && typeof api.startAudio === 'function') {
+        await api.startAudio();
+        if (!wasRunning && restartWhenActive) _namNativeStartedAudio = true;
+    }
+    return !!ok;
+}
+
+async function _namApplySavedNativeDevice(api) {
+    const saved = _namLoadNativeDeviceSettings();
+    if (!saved) return false;
+    return _namApplyNativeDeviceSettings(api, saved, _namEnabled);
+}
+
+function _namNativeInputChannel() {
+    if (_namChannel === 'left') return 0;
+    if (_namChannel === 'right') return 1;
+    return -1;
+}
+
+function _namFormatMs(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 'N/A';
+    return `${n.toFixed(n < 10 ? 2 : 1)}ms`;
+}
+
+async function _namRefreshNativeLatency(api) {
+    if (!api || typeof api.getCurrentDevice !== 'function') {
+        _namNativeLatencyText = 'reported N/A';
+        return;
+    }
+    let device = null;
+    try { device = await api.getCurrentDevice(); } catch (_) { device = null; }
+    const reportedMs = device && Number(device.latencyMs);
+    _namNativeLatencyText = `reported ${_namFormatMs(reportedMs)}`;
+    _namSetNativeDeviceStatus(_namNativeLatencyText, Number.isFinite(reportedMs) ? 'ok' : 'muted');
+    console.log('[NAM] Native desktop latency:',
+        `reported=${_namFormatMs(reportedMs)}`,
+        `device=${device ? `${device.input || 'unknown'} -> ${device.output || 'unknown'}` : 'unknown'}`,
+        `sampleRate=${device && device.sampleRate ? device.sampleRate : 'unknown'}`,
+        `bufferSize=${device && device.blockSize ? device.blockSize : 'unknown'}`);
+}
+
+async function _namApplyNativePreset(preset, api) {
+    _namCurrentPreset = preset;
+    _namNativeMode = true;
+    _namNativeReady = false;
+    _namWasmReady = false;
+
+    if (preset.input_gain !== undefined) _namApplyInputGain(preset.input_gain);
+    if (preset.output_gain !== undefined) _namApplyOutputGain(preset.output_gain);
+
+    const presetId = preset.preset_id !== undefined ? preset.preset_id : preset.id;
+    if (!presetId) throw new Error('Native desktop mode requires a saved preset id');
+
+    const resp = await fetch(`/api/plugins/nam_tone/native-preset/${encodeURIComponent(presetId)}`);
+    if (!resp.ok) throw new Error(`native preset ${presetId} failed: HTTP ${resp.status}`);
+    const payload = await resp.json();
+    if (!payload.native_preset || !Array.isArray(payload.native_preset.chain)) {
+        throw new Error('native preset response missing chain');
+    }
+
+    await api.clearChain();
+    const result = await api.loadPreset(JSON.stringify(payload.native_preset));
+    if (!result || result.success === false) {
+        throw new Error(result && result.error ? result.error : 'native preset load failed');
+    }
+
+    if (typeof api.setInputChannel === 'function') await api.setInputChannel(_namNativeInputChannel());
+    if (typeof api.setGain === 'function') {
+        await api.setGain('input', 1.0);
+        await api.setGain('output', 1.0);
+    }
+    if (typeof api.setNoiseGate === 'function') {
+        await api.setNoiseGate({
+            enabled: true,
+            thresholdDb: preset.gate_threshold !== undefined ? preset.gate_threshold : _namGateThreshold,
+            releaseMs: 100,
+            depthDb: -80,
+        });
+    }
+    if (typeof api.setMonitorMute === 'function') await api.setMonitorMute(false);
+    const wasRunning = typeof api.isAudioRunning === 'function'
+        ? await api.isAudioRunning().catch(() => true)
+        : true;
+    await api.startAudio();
+    _namNativeStartedAudio = !wasRunning;
+    await _namRefreshNativeLatency(api);
+
+    _namNativeReady = true;
+    console.log('[NAM] Applied native desktop preset:', payload.name || preset.name || preset.preset_name,
+        'slots:', result.slotsLoaded, 'latency:', _namNativeLatencyText || 'reported N/A');
+    _namUpdateStatus();
+}
+
+async function _namBuildNativeGraph(api) {
+    _namBuilding = true;
+    _namNativeMode = true;
+    let loadedPreset = false;
+    try {
+        await _namApplySavedNativeDevice(api);
+        if (_namCurrentPreset) {
+            await _namApplyNativePreset(_namCurrentPreset, api);
+            loadedPreset = true;
+        } else if (_namDefaultPresetId) {
+            const resp = await fetch('/api/plugins/nam_tone/presets');
+            const presets = await resp.json();
+            const def = presets.find(p => p.id === _namDefaultPresetId);
+            if (def) {
+                await _namApplyNativePreset(def, api);
+                loadedPreset = true;
+            }
+        } else {
+            await api.clearChain();
+            if (typeof api.setMonitorMute === 'function') await api.setMonitorMute(true);
+        }
+        if (!loadedPreset) {
+            await _namRefreshNativeLatency(api);
+            _namNativeReady = true;
+            _namUpdateStatus();
+        }
+        console.log('[NAM] Native desktop audio graph built');
+    } finally {
+        _namBuilding = false;
+    }
+}
 
 // ── localStorage Persistence ───────────────────────────────────────────────
 
@@ -106,6 +350,15 @@ if (window.slopsmith && window.slopsmith.audio) {
 // ── Audio Graph ────────────────────────────────────────────────────────────
 
 async function _namBuildGraph() {
+    const nativeApi = _namDesktopAudio();
+    if (nativeApi && await _namDesktopAudioAvailable(nativeApi)) {
+        await _namBuildNativeGraph(nativeApi);
+        return;
+    }
+
+    _namNativeMode = false;
+    _namNativeReady = false;
+    _namNativeLatencyText = null;
     _namBuilding = true;
     // Create or reuse AudioContext
     if (!_namCtx) {
@@ -238,6 +491,7 @@ async function _namBuildGraph() {
 
     console.log('[NAM] Audio graph built, latency:',
         Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000), 'ms');
+    _namUpdateStatus();
 }
 
 // ── WASM Loading ───────────────────────────────────────────────────────────
@@ -324,6 +578,12 @@ function _namBypassIR() {
 // ── Preset Application ────────────────────────────────────────────────────
 
 async function _namApplyPreset(preset) {
+    const nativeApi = _namDesktopAudio();
+    if (nativeApi && await _namDesktopAudioAvailable(nativeApi)) {
+        await _namApplyNativePreset(preset, nativeApi);
+        return;
+    }
+
     _namCurrentPreset = preset;
 
     // Apply gains without persisting to localStorage — preset gains are
@@ -385,7 +645,7 @@ async function _namLoadMappings(filename) {
 
 function _namCheckToneChange() {
     if (!_namEnabled || !_namCurrentFilename || _namBuilding) return;
-    if (!_namWasmReady || Object.keys(_namMappings).length === 0) return;
+    if ((_namNativeMode ? !_namNativeReady : !_namWasmReady) || Object.keys(_namMappings).length === 0) return;
 
     const t = highway.getTime();
     const changes = highway.getToneChanges();
@@ -444,6 +704,24 @@ function _namRestoreGuitarStem() {
 // ── Teardown ───────────────────────────────────────────────────────────────
 
 function _namTeardown() {
+    if (_namNativeMode) {
+        const api = _namDesktopAudio();
+        if (api) {
+            Promise.resolve(api.clearChain()).catch(e => console.warn('[NAM] Native clear failed:', e));
+            if (_namNativeStartedAudio && typeof api.stopAudio === 'function') {
+                Promise.resolve(api.stopAudio()).catch(e => console.warn('[NAM] Native stop failed:', e));
+            }
+            if (typeof api.setMonitorMute === 'function') {
+                Promise.resolve(api.setMonitorMute(true)).catch(() => {});
+            }
+        }
+        _namNativeReady = false;
+        _namNativeMode = false;
+        _namNativeLatencyText = null;
+        _namNativeStartedAudio = false;
+        _namUpdateStatus();
+    }
+
     if (_namStream) {
         _namStream.getTracks().forEach(t => t.stop());
         _namStream = null;
@@ -472,21 +750,25 @@ function _namInjectButton() {
     btn.title = 'Toggle NAM amp modeling';
     btn.onclick = _namToggle;
     controls.insertBefore(btn, closeBtn);
+    _namUpdateAmpButton();
 }
 
 function _namToggle() {
     _namEnabled = !_namEnabled;
-    const btn = document.getElementById('btn-nam');
-    if (btn) {
-        btn.className = _namEnabled
-            ? 'px-3 py-1.5 bg-green-700/40 hover:bg-green-700/60 rounded-lg text-xs text-green-300 transition'
-            : 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-400 transition';
+    if (!_namEnabled) {
+        _namTestMode = false;
+        _namTestPresetId = null;
     }
+    _namUpdateAmpButton();
     if (_namEnabled) {
-        _namBuildGraph().catch(e => console.error('[NAM] Build failed:', e));
+        _namBuildGraph().catch(e => {
+            _namBuilding = false;
+            console.error('[NAM] Build failed:', e);
+        });
         _namDuckGuitarStem();
     } else {
         _namTeardown();
+        _namUpdatePresetTestButtons();
     }
 }
 
@@ -509,8 +791,12 @@ function _namToggle() {
 (function() {
     const origShowScreen = window.showScreen;
     window.showScreen = function(id) {
+        if (id !== 'plugin-nam_tone' && _namTestMode) {
+            window.namStopProfileTest();
+        }
         origShowScreen(id);
         if (id === 'plugin-nam_tone') _namInitScreen();
+        if (id === 'settings') setTimeout(_namInitSettingsControls, 0);
     };
 })();
 
@@ -525,15 +811,54 @@ async function _namInitScreen() {
     _namUpdateStatus();
 }
 
+function _namGraphActive() {
+    return (_namNativeMode && _namNativeReady)
+        || !!(_namStream && _namInputGain && _namWorkletNode && _namOutputGain);
+}
+
+function _namUpdateAmpButton() {
+    const btn = document.getElementById('btn-nam');
+    if (!btn) return;
+    btn.className = _namEnabled
+        ? 'px-3 py-1.5 bg-green-700/40 hover:bg-green-700/60 rounded-lg text-xs text-green-300 transition'
+        : 'px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-400 transition';
+}
+
+function _namUpdatePresetTestButtons() {
+    document.querySelectorAll('[data-nam-test-preset-id]').forEach(btn => {
+        const isActive = _namTestMode && String(btn.dataset.namTestPresetId) === String(_namTestPresetId);
+        btn.textContent = isActive ? 'Stop' : 'Test';
+        btn.className = isActive
+            ? 'px-2 py-1 bg-red-700/50 hover:bg-red-700/70 rounded text-xs text-red-100 transition'
+            : 'px-2 py-1 bg-green-700/40 hover:bg-green-700/60 rounded text-xs text-green-300 transition';
+        btn.setAttribute('onclick', isActive ? 'namStopProfileTest()' : `namTestPreset(${btn.dataset.namTestPresetId})`);
+    });
+}
+
+async function _namGetPresetById(presetId) {
+    const resp = await fetch('/api/plugins/nam_tone/presets');
+    const presets = await resp.json();
+    return presets.find(p => String(p.id) === String(presetId)) || null;
+}
+
 function _namUpdateStatus() {
     const el = document.getElementById('nam-status');
     if (!el) return;
 
     const supported = typeof AudioWorkletNode !== 'undefined';
     const wasmStatus = _namWasmReady ? 'Loaded' : 'Not loaded';
+    const desktopApi = _namDesktopAudio();
+    const modeText = desktopApi ? (_namNativeMode ? 'Desktop Native' : 'Desktop Native available') : 'Browser WASM';
+    const modeClass = desktopApi ? 'text-green-400' : 'text-yellow-400';
+    const latencyText = _namNativeMode
+        ? (_namNativeLatencyText || 'reported N/A')
+        : (_namCtx ? Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000) + 'ms' : 'N/A');
 
     el.innerHTML = `
-        <div class="bg-dark-700/50 border border-gray-800/50 rounded-xl p-3 flex items-center gap-4 text-xs">
+        <div class="bg-dark-700/50 border border-gray-800/50 rounded-xl p-3 flex flex-wrap items-center gap-4 text-xs">
+            <span class="${modeClass}">
+                Mode: ${modeText}
+            </span>
             <span class="${supported ? 'text-green-400' : 'text-red-400'}">
                 AudioWorklet: ${supported ? 'Supported' : 'Not supported'}
             </span>
@@ -541,7 +866,7 @@ function _namUpdateStatus() {
                 WASM: ${wasmStatus}
             </span>
             <span class="text-gray-500">
-                Latency: ${_namCtx ? Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000) + 'ms' : 'N/A'}
+                Latency: ${latencyText}
             </span>
         </div>`;
 }
@@ -606,6 +931,12 @@ async function _namRefreshPresets() {
                 </div>
             </div>
             <div class="flex items-center gap-2">
+                <button data-nam-test-preset-id="${p.id}" onclick="${_namTestMode && String(_namTestPresetId) === String(p.id) ? 'namStopProfileTest()' : `namTestPreset(${p.id})`}"
+                    class="${_namTestMode && String(_namTestPresetId) === String(p.id)
+                        ? 'px-2 py-1 bg-red-700/50 hover:bg-red-700/70 rounded text-xs text-red-100 transition'
+                        : 'px-2 py-1 bg-green-700/40 hover:bg-green-700/60 rounded text-xs text-green-300 transition'}">
+                    ${_namTestMode && String(_namTestPresetId) === String(p.id) ? 'Stop' : 'Test'}
+                </button>
                 <button onclick="namEditPreset(${p.id})"
                     class="px-2 py-1 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-400 transition">Edit</button>
                 <button onclick="namDeletePreset(${p.id})"
@@ -613,6 +944,7 @@ async function _namRefreshPresets() {
             </div>
         </div>
     `).join('');
+    _namUpdatePresetTestButtons();
 
     // Also update preset dropdowns in tone mapping editor
     _namUpdatePresetDropdowns(presets);
@@ -700,6 +1032,61 @@ window.namEditPreset = async function(presetId) {
 window.namDeletePreset = async function(presetId) {
     await fetch(`/api/plugins/nam_tone/presets/${presetId}`, { method: 'DELETE' });
     _namRefreshPresets();
+};
+
+window.namStartProfileTest = async function(presetId) {
+    if (!presetId) return;
+    const preset = await _namGetPresetById(presetId);
+    if (!preset) {
+        console.warn('[NAM] Profile not found for test:', presetId);
+        return;
+    }
+
+    _namTestMode = true;
+    _namTestPresetId = presetId;
+    _namEnabled = true;
+    _namCurrentFilename = null;
+    _namMappings = {};
+    _namCurrentTone = null;
+    _namCurrentPreset = preset;
+    _namUpdateAmpButton();
+    _namUpdatePresetTestButtons();
+
+    try {
+        if (_namGraphActive()) {
+            await _namApplyPreset(preset);
+        } else {
+            await _namBuildGraph();
+        }
+        _namUpdateStatus();
+    } catch (e) {
+        console.error('[NAM] Profile tone test failed:', e);
+        _namTestMode = false;
+        _namTestPresetId = null;
+        _namEnabled = false;
+        _namBuilding = false;
+        _namTeardown();
+        _namUpdateAmpButton();
+        _namUpdatePresetTestButtons();
+    }
+};
+
+window.namTestPreset = async function(presetId) {
+    if (_namTestMode && String(_namTestPresetId) === String(presetId)) {
+        window.namStopProfileTest();
+        return;
+    }
+    await window.namStartProfileTest(presetId);
+};
+
+window.namStopProfileTest = function() {
+    _namTestMode = false;
+    _namTestPresetId = null;
+    _namEnabled = false;
+    _namTeardown();
+    _namUpdateAmpButton();
+    _namUpdatePresetTestButtons();
+    _namUpdateStatus();
 };
 
 window.namSearchSongs = async function() {
@@ -815,6 +1202,96 @@ function _namApplyOutputGain(val) {
     if (slider) slider.value = _namOutputGainVal;
 }
 
+function _namInitSettingsControls() {
+    _namApplyInputGain(_namInputGainVal);
+    _namApplyOutputGain(_namOutputGainVal);
+
+    const browserDevice = document.getElementById('nam-device-select');
+    if (browserDevice) browserDevice.value = _namDeviceId;
+    const channel = document.getElementById('nam-channel-select');
+    if (channel) channel.value = _namChannel;
+    const gate = document.getElementById('nam-gate-slider');
+    if (gate) gate.value = _namGateThreshold;
+    const gateLabel = document.getElementById('nam-gate-label');
+    if (gateLabel) gateLabel.textContent = _namGateThreshold.toFixed(0) + ' dB';
+    const latency = document.getElementById('nam-latency-slider');
+    if (latency) latency.value = _namLatencyOffset;
+    const latencyLabel = document.getElementById('nam-latency-label');
+    if (latencyLabel) latencyLabel.textContent = _namLatencyOffset.toFixed(0) + ' ms';
+    const duck = document.getElementById('nam-duck-guitar');
+    if (duck) duck.checked = _namDuckGuitar;
+
+    const nativeSection = document.getElementById('nam-native-device-section');
+    const api = _namDesktopAudio();
+    const nativeAvailable = _namSupportsNativeDeviceSettings(api);
+    if (nativeSection) nativeSection.classList.toggle('hidden', !nativeAvailable);
+    if (nativeAvailable) window.namPopulateNativeDevices().catch(e => {
+        console.warn('[NAM] Native device populate failed:', e);
+        _namSetNativeDeviceStatus('Unavailable', 'error');
+    });
+}
+
+window.namSelectNativeDeviceType = function(typeName) {
+    _namRenderNativeDeviceDropdowns(typeName);
+};
+
+window.namPopulateNativeDevices = async function() {
+    const api = _namDesktopAudio();
+    const section = document.getElementById('nam-native-device-section');
+    if (!_namSupportsNativeDeviceSettings(api) || !await _namDesktopAudioAvailable(api)) {
+        if (section) section.classList.add('hidden');
+        return;
+    }
+    if (section) section.classList.remove('hidden');
+
+    _namSetNativeDeviceStatus('Loading...');
+    const [types, rates, buffers, current] = await Promise.all([
+        api.getDeviceTypes(),
+        api.getSampleRates(),
+        api.getBufferSizes(),
+        api.getCurrentDevice().catch(() => null),
+    ]);
+    _namNativeDeviceTypes = Array.isArray(types) ? types : [];
+    const saved = _namLoadNativeDeviceSettings() || {};
+    const type = saved.type || (current && current.type) || (_namNativeDeviceTypes[0] && _namNativeDeviceTypes[0].name) || '';
+    const input = saved.input !== undefined ? saved.input : ((current && current.input) || '');
+    const output = saved.output !== undefined ? saved.output : ((current && current.output) || '');
+    const sampleRate = saved.sampleRate || (current && current.sampleRate) || 48000;
+    const bufferSize = saved.bufferSize || (current && current.blockSize) || 256;
+
+    _namSetSelectOptions(
+        document.getElementById('nam-native-device-type'),
+        _namNativeDeviceTypes.map(t => t.name),
+        type,
+        null
+    );
+    _namRenderNativeDeviceDropdowns(type, input, output);
+    _namSetSelectOptions(document.getElementById('nam-native-sample-rate'), rates && rates.length ? rates : [sampleRate], sampleRate, null);
+    _namSetSelectOptions(document.getElementById('nam-native-buffer-size'), buffers && buffers.length ? buffers : [bufferSize], bufferSize, null);
+    _namSetNativeDeviceStatus(current && current.latencyMs ? `Reported ${_namFormatMs(current.latencyMs)}` : 'Ready', 'ok');
+};
+
+window.namApplyNativeDevice = async function() {
+    const api = _namDesktopAudio();
+    if (!_namSupportsNativeDeviceSettings(api) || !await _namDesktopAudioAvailable(api)) {
+        _namSetNativeDeviceStatus('Unavailable', 'error');
+        return;
+    }
+
+    _namSetNativeDeviceStatus('Applying...');
+    const settings = _namNativeDeviceFormValues();
+    const ok = await _namApplyNativeDeviceSettings(api, settings, _namEnabled);
+    if (!ok) {
+        _namSetNativeDeviceStatus('Failed', 'error');
+        return;
+    }
+    _namSaveNativeDeviceSettings(settings);
+    if (typeof api.setInputChannel === 'function') await api.setInputChannel(_namNativeInputChannel());
+    await _namRefreshNativeLatency(api);
+    _namSetNativeDeviceStatus(_namNativeLatencyText || 'Applied', 'ok');
+    _namUpdateStatus();
+};
+
 window.namSelectDevice = function(deviceId) {
     _namDeviceId = deviceId;
     _namSaveSettings();
@@ -822,6 +1299,10 @@ window.namSelectDevice = function(deviceId) {
 
 window.namSelectChannel = function(channel) {
     _namChannel = channel;
+    const api = _namDesktopAudio();
+    if (_namNativeMode && api && typeof api.setInputChannel === 'function') {
+        api.setInputChannel(_namNativeInputChannel()).catch(e => console.warn('[NAM] Native channel update failed:', e));
+    }
     _namSaveSettings();
 };
 
@@ -841,6 +1322,15 @@ window.namSetGateThreshold = function(val) {
     _namGateThreshold = parseFloat(val);
     if (_namWorkletNode) {
         _namWorkletNode.port.postMessage({ type: 'set-gate', threshold: _namGateThreshold });
+    }
+    const api = _namDesktopAudio();
+    if (_namNativeMode && api && typeof api.setNoiseGate === 'function') {
+        api.setNoiseGate({
+            enabled: true,
+            thresholdDb: _namGateThreshold,
+            releaseMs: 100,
+            depthDb: -80,
+        }).catch(e => console.warn('[NAM] Native gate update failed:', e));
     }
     _namSaveSettings();
     const label = document.getElementById('nam-gate-label');
@@ -885,6 +1375,8 @@ window.namPopulateDevices = async function() {
         }
     } catch (e) { /* permission not yet granted */ }
 };
+
+setTimeout(_namInitSettingsControls, 0);
 
 // Populate model/IR dropdowns in preset editor
 window.namPopulatePresetDropdowns = async function() {
