@@ -1243,7 +1243,7 @@ async function _namRestoreTestBackup() {
         }
         if (!restored && _namGraphActive()) {
             await _namTeardown();
-            _namEnabled = true;
+            _namEnabled = false;
             _namCurrentPreset = null;
             _namCurrentTone = null;
         }
@@ -1914,6 +1914,35 @@ async function _namRebuildActiveGraphForEngineChange() {
     _namUpdateSettingsPresetTestStatus();
 }
 
+async function _namRebuildBrowserWasmPath() {
+    if (!_namEnabled || _namNativeMode) return;
+    const preset = _namCurrentPreset;
+    const tone = _namCurrentTone;
+    try {
+        await _namTeardown();
+        _namCurrentPreset = preset;
+        _namCurrentTone = tone;
+        await _namBuildWasmGraph();
+        if (_namTestMode && preset) {
+            await _namApplyWasmPreset(preset);
+        } else {
+            await _namApplyCurrentSongTone(true);
+        }
+        _namDuckGuitarStem();
+        _namUpdateStatus();
+        _namUpdateSettingsPresetTestStatus();
+    } catch (e) {
+        console.error('[NAM] Browser input rebuild failed:', e);
+        _namBuilding = false;
+        _namEnabled = false;
+        _namRestoreGuitarStem();
+        _namUpdateAmpButton();
+        _namUpdatePresetTestButtons();
+        _namUpdateStatus();
+        _namSetSettingsPresetTestStatus('Input switch failed', 'error');
+    }
+}
+
 async function _namStopSettingsPresetTestForSettingChange() {
     if (!_namTestMode) return false;
     await window.namStopPresetTest();
@@ -2094,6 +2123,11 @@ window.namApplyNativeDevice = async function() {
         _namSetNativeDeviceStatus(_namNativeLatencyText || 'Applied', 'ok');
         _namUpdateStatus();
         _namUpdateNativeApplyButtonState();
+    } catch (e) {
+        console.warn('[NAM] Native device apply failed:', e);
+        _namSetNativeDeviceStatus('Failed', 'error');
+        _namUpdateStatus();
+        _namUpdateNativeApplyButtonState();
     } finally {
         _namSetNativeDeviceBusy(false);
         _namUpdateNativeApplyButtonState();
@@ -2104,12 +2138,14 @@ window.namSelectDevice = async function(deviceId) {
     await _namStopSettingsPresetTestForSettingChange();
     _namDeviceId = deviceId;
     _namSaveSettings();
+    await _namRebuildBrowserWasmPath();
 };
 
 window.namSelectChannel = async function(channel) {
     await _namStopSettingsPresetTestForSettingChange();
     _namChannel = channel;
     _namSaveSettings();
+    await _namRebuildBrowserWasmPath();
     _namUpdateNativeApplyButtonState();
 };
 

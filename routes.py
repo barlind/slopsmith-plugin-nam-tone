@@ -351,8 +351,8 @@ def setup(app, context):
 
         files = None
         for candidate_name in candidate_names:
-            candidate_path = dlc / candidate_name
-            if not candidate_path.exists():
+            candidate_path = _safe_child(dlc, candidate_name)
+            if candidate_path is None or not candidate_path.exists():
                 continue
             try:
                 files = read_psarc_entries(str(candidate_path), ["*.json"])
