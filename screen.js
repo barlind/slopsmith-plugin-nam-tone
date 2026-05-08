@@ -517,14 +517,14 @@ function _namWasmLatencyText() {
 }
 
 function _namWasmLatencyBreakdown() {
-    if (!_namCtx) return 'N/A (buffer size: browser-managed)';
+    if (!_namCtx) return 'N/A (browser-managed buffer)';
     const baseMs = Number(_namCtx.baseLatency || 0) * 1000;
     const outputMs = Number(_namCtx.outputLatency || 0) * 1000;
     const totalMs = baseMs + outputMs;
     const totalText = totalMs > 0 ? _namFormatMs(totalMs) : 'N/A';
     const baseText = baseMs > 0 ? _namFormatMs(baseMs) : 'N/A';
     const outputText = outputMs > 0 ? _namFormatMs(outputMs) : 'N/A';
-    return `${totalText} (base ${baseText} + output ${outputText}; buffer size: browser-managed)`;
+    return `${totalText} (base audio ${baseText} + output device ${outputText}; browser-managed buffer)`;
 }
 
 function _namUpdateSettingsPresetTestStatus() {
@@ -748,7 +748,9 @@ async function _namBuildWasmGraph() {
     _namBuilding = true;
     // Create or reuse AudioContext
     if (!_namCtx) {
-        _namCtx = new (window.AudioContext || window.webkitAudioContext)();
+        _namCtx = new (window.AudioContext || window.webkitAudioContext)({
+            latencyHint: 'interactive',
+        });
     }
     if (_namCtx.state === 'suspended') await _namCtx.resume();
 
