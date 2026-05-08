@@ -1,5 +1,6 @@
 """NAM Tone Engine plugin — manage amp models, IR files, presets, and tone mappings."""
 
+import base64
 import json
 import os
 import sqlite3
@@ -9,18 +10,36 @@ from pathlib import Path
 from fastapi import UploadFile, File
 from fastapi.responses import FileResponse, Response
 
-_db_path = None
+_db_path: str | None = None
 _conn = None
 _lock = threading.Lock()
 _plugin_dir = Path(__file__).parent
-_models_dir = None
-_irs_dir = None
+_models_dir: Path | None = None
+_irs_dir: Path | None = None
+
+
+def _require_db_path() -> str:
+    if _db_path is None:
+        raise RuntimeError("NAM Tone plugin has not been initialized")
+    return _db_path
+
+
+def _require_models_dir() -> Path:
+    if _models_dir is None:
+        raise RuntimeError("NAM Tone plugin has not been initialized")
+    return _models_dir
+
+
+def _require_irs_dir() -> Path:
+    if _irs_dir is None:
+        raise RuntimeError("NAM Tone plugin has not been initialized")
+    return _irs_dir
 
 
 def _get_conn():
     global _conn
     if _conn is None:
-        _conn = sqlite3.connect(_db_path, check_same_thread=False)
+        _conn = sqlite3.connect(_require_db_path(), check_same_thread=False)
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("""
             CREATE TABLE IF NOT EXISTS presets (
@@ -48,21 +67,58 @@ def _get_conn():
     return _conn
 
 
+def _state_b64(data: dict) -> str:
+    payload = json.dumps(data, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(payload).decode("ascii")
+
+
+def _safe_child(root: Path, name: str | None):
+    if not name:
+        return None
+    root_resolved = root.resolve()
+    path = (root / name).resolve()
+    try:
+        path.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return path
+
+
+def _mapping_filenames(filename: str) -> list[str]:
+    """Return filename aliases that should share tone mappings.
+
+    Sloppak playback uses paths like "sloppak/boststar.sloppak" while the
+    same song is often mapped from the original PSARC filename
+    "boststar_p.psarc". Keep the exact filename first so direct mappings win.
+    """
+    names = [filename]
+    normalized = filename.replace("\\", "/")
+    if normalized.startswith("sloppak/") and normalized.lower().endswith(".sloppak"):
+        psarc_name = f"{Path(normalized).stem}_p.psarc"
+        if psarc_name not in names:
+            names.append(psarc_name)
+    return names
+
+
 def setup(app, context):
     global _db_path, _models_dir, _irs_dir
+    filename_aliases = context.get("filename_aliases") or _mapping_filenames
     config_dir = context["config_dir"]
     _db_path = str(config_dir / "nam_tone.db")
-    _models_dir = config_dir / "nam_models"
-    _irs_dir = config_dir / "nam_irs"
-    _models_dir.mkdir(exist_ok=True)
-    _irs_dir.mkdir(exist_ok=True)
+    models_dir = config_dir / "nam_models"
+    irs_dir = config_dir / "nam_irs"
+    _models_dir = models_dir
+    _irs_dir = irs_dir
+    models_dir.mkdir(exist_ok=True)
+    irs_dir.mkdir(exist_ok=True)
 
     # ── Models ────────────────────────────────────────────────────────────
 
     @app.get("/api/plugins/nam_tone/models")
     def list_models():
+        models_dir = _require_models_dir()
         files = []
-        for f in sorted(_models_dir.iterdir()):
+        for f in sorted(models_dir.iterdir()):
             if f.suffix == ".nam":
                 stat = f.stat()
                 files.append({"name": f.name, "size": stat.st_size, "mtime": stat.st_mtime})
@@ -70,14 +126,18 @@ def setup(app, context):
 
     @app.post("/api/plugins/nam_tone/models")
     async def upload_model(file: UploadFile = File(...)):
-        dest = _models_dir / file.filename
+        dest = _safe_child(_require_models_dir(), file.filename)
+        if dest is None:
+            return Response("invalid filename", status_code=400)
         data = await file.read()
         dest.write_bytes(data)
         return {"ok": True, "name": file.filename, "size": len(data)}
 
     @app.delete("/api/plugins/nam_tone/models/{name:path}")
     def delete_model(name: str):
-        path = _models_dir / name
+        path = _safe_child(_require_models_dir(), name)
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if path.exists():
             path.unlink()
         return {"ok": True}
@@ -86,8 +146,9 @@ def setup(app, context):
 
     @app.get("/api/plugins/nam_tone/irs")
     def list_irs():
+        irs_dir = _require_irs_dir()
         files = []
-        for f in sorted(_irs_dir.iterdir()):
+        for f in sorted(irs_dir.iterdir()):
             if f.suffix == ".wav":
                 stat = f.stat()
                 files.append({"name": f.name, "size": stat.st_size, "mtime": stat.st_mtime})
@@ -96,7 +157,9 @@ def setup(app, context):
     @app.post("/api/plugins/nam_tone/irs")
     async def upload_ir(file: UploadFile = File(...)):
         import subprocess, tempfile
-        dest = _irs_dir / file.filename
+        dest = _safe_child(_require_irs_dir(), file.filename)
+        if dest is None:
+            return Response("invalid filename", status_code=400)
         data = await file.read()
         # Convert to browser-compatible WAV (PCM float32, 48kHz mono)
         # decodeAudioData is picky about formats; ffmpeg normalizes it
@@ -122,7 +185,9 @@ def setup(app, context):
 
     @app.delete("/api/plugins/nam_tone/irs/{name:path}")
     def delete_ir(name: str):
-        path = _irs_dir / name
+        path = _safe_child(_require_irs_dir(), name)
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if path.exists():
             path.unlink()
         return {"ok": True}
@@ -168,24 +233,88 @@ def setup(app, context):
             conn.commit()
         return {"ok": True}
 
+    @app.get("/api/plugins/nam_tone/native-preset/{preset_id}")
+    def get_native_preset(preset_id: int):
+        conn = _get_conn()
+        row = conn.execute(
+            "SELECT id, name, model_file, ir_file, input_gain, output_gain, gate_threshold "
+            "FROM presets WHERE id = ?",
+            (preset_id,),
+        ).fetchone()
+        if not row:
+            return Response("not found", status_code=404)
+
+        preset_id, name, model_file, ir_file, input_gain, output_gain, gate_threshold = row
+        chain = []
+
+        model_path = _safe_child(_require_models_dir(), model_file)
+        ir_path = _safe_child(_require_irs_dir(), ir_file)
+        if model_file and (model_path is None or not model_path.exists()):
+            return Response("model not found", status_code=404)
+        if ir_file and (ir_path is None or not ir_path.exists()):
+            return Response("ir not found", status_code=404)
+
+        if model_path:
+            chain.append({
+                "type": 1,
+                "name": Path(model_file).stem,
+                "path": str(model_path),
+                "bypassed": False,
+                "state": _state_b64({
+                    "modelPath": str(model_path),
+                    "inputLevel": float(input_gain),
+                    "outputLevel": 1.0 if ir_path else float(output_gain),
+                }),
+            })
+
+        if ir_path:
+            chain.append({
+                "type": 2,
+                "name": Path(ir_file).stem,
+                "path": str(ir_path),
+                "bypassed": False,
+                "state": _state_b64({
+                    "irPath": str(ir_path),
+                    "gain": float(output_gain),
+                }),
+            })
+
+        return {
+            "id": preset_id,
+            "name": name,
+            "input_gain": input_gain,
+            "output_gain": output_gain,
+            "gate_threshold": gate_threshold,
+            "native_preset": {"version": 1, "chain": chain},
+        }
+
     # ── Tone Mappings ─────────────────────────────────────────────────────
 
     @app.get("/api/plugins/nam_tone/mappings/{filename:path}")
     def get_mappings(filename: str):
         conn = _get_conn()
+        filenames = filename_aliases(filename)
+        placeholders = ",".join("?" for _ in filenames)
         rows = conn.execute(
             "SELECT tm.id, tm.tone_key, tm.preset_id, p.name, p.model_file, p.ir_file, "
             "p.input_gain, p.output_gain, p.gate_threshold "
             "FROM tone_mappings tm JOIN presets p ON tm.preset_id = p.id "
-            "WHERE tm.filename = ? ORDER BY tm.tone_key",
-            (filename,)
+            f"WHERE tm.filename IN ({placeholders}) "
+            "ORDER BY CASE tm.filename WHEN ? THEN 0 ELSE 1 END, tm.tone_key",
+            (*filenames, filename)
         ).fetchall()
-        return [
-            {"id": r[0], "tone_key": r[1], "preset_id": r[2],
-             "preset_name": r[3], "model_file": r[4], "ir_file": r[5],
-             "input_gain": r[6], "output_gain": r[7], "gate_threshold": r[8]}
-            for r in rows
-        ]
+        mappings = []
+        seen_tones = set()
+        for r in rows:
+            if r[1] in seen_tones:
+                continue
+            seen_tones.add(r[1])
+            mappings.append({
+                "id": r[0], "tone_key": r[1], "preset_id": r[2],
+                "preset_name": r[3], "model_file": r[4], "ir_file": r[5],
+                "input_gain": r[6], "output_gain": r[7], "gate_threshold": r[8],
+            })
+        return mappings
 
     @app.post("/api/plugins/nam_tone/mappings/{filename:path}")
     def save_mapping(filename: str, data: dict):
@@ -216,11 +345,23 @@ def setup(app, context):
         if not dlc:
             return {"error": "DLC folder not configured"}
 
-        psarc_path = dlc / filename
-        if not psarc_path.exists():
-            return {"error": "File not found"}
+        candidate_names = filename_aliases(filename)
+        if filename.replace("\\", "/").lower().endswith(".sloppak"):
+            candidate_names = [n for n in candidate_names if n.lower().endswith(".psarc")] + [filename]
 
-        files = read_psarc_entries(str(psarc_path), ["*.json"])
+        files = None
+        for candidate_name in candidate_names:
+            candidate_path = _safe_child(dlc, candidate_name)
+            if candidate_path is None or not candidate_path.exists():
+                continue
+            try:
+                files = read_psarc_entries(str(candidate_path), ["*.json"])
+                break
+            except ValueError:
+                continue
+        if files is None:
+            return {"error": "File not found or not a PSARC"}
+
         tones = []
         seen = set()
 
@@ -257,14 +398,16 @@ def setup(app, context):
     @app.get("/api/plugins/nam_tone/file/{file_type}/{name:path}")
     def serve_file(file_type: str, name: str):
         if file_type == "model":
-            path = _models_dir / name
+            path = _safe_child(_require_models_dir(), name)
             mt = "application/json"
         elif file_type == "ir":
-            path = _irs_dir / name
+            path = _safe_child(_require_irs_dir(), name)
             mt = "audio/wav"
         else:
             return Response("invalid type", status_code=400)
 
+        if path is None:
+            return Response("invalid filename", status_code=400)
         if not path.exists():
             return Response("not found", status_code=404)
         return FileResponse(str(path), media_type=mt)
@@ -272,7 +415,9 @@ def setup(app, context):
     @app.get("/api/plugins/nam_tone/worklet/{filename:path}")
     def serve_worklet(filename: str):
         for subdir in ["worklet", "wasm"]:
-            path = _plugin_dir / subdir / filename
+            path = _safe_child(_plugin_dir / subdir, filename)
+            if path is None:
+                continue
             if path.exists():
                 ext = path.suffix
                 mt = {

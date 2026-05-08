@@ -1,12 +1,14 @@
 # NAM Tone Engine Plugin
 
-Play through Neural Amp Modeler (NAM) amp models and cabinet impulse responses directly in the browser. Plug your guitar into a USB audio interface, click AMP, and hear your guitar processed through a neural network amp model — no external software needed.
+Play through Neural Amp Modeler (NAM) amp models and cabinet impulse responses from Slopsmith. In a regular browser, the plugin uses Web Audio + WASM. In Slopsmith Desktop, it can use the native Desktop audio engine so guitar input runs through the JUCE/NAM/IR signal chain instead of the browser AudioContext path.
 
 ## How It Works
 
 ### Signal Chain
 
-```
+Browser mode:
+
+```text
 Guitar (USB interface) → getUserMedia
   → Input Gain
   → NAM AudioWorklet (WASM amp model inference)
@@ -15,7 +17,27 @@ Guitar (USB interface) → getUserMedia
   → Speakers
 ```
 
-The plugin captures your guitar via the Web Audio API, processes it through a Neural Amp Modeler compiled to WebAssembly running inside an AudioWorkletProcessor, then applies a cabinet impulse response using the browser's native ConvolverNode. The processed signal is routed to your speakers while the song's guitar stem is automatically muted.
+Slopsmith Desktop native mode:
+
+```text
+Guitar (Desktop audio device)
+  → Slopsmith Desktop native audio engine
+  → NAM processor
+  → IR loader
+  → Desktop audio output
+```
+
+The browser path captures your guitar via the Web Audio API, processes it through a Neural Amp Modeler compiled to WebAssembly running inside an AudioWorkletProcessor, then applies a cabinet impulse response using the browser's native ConvolverNode. The Desktop path detects `window.slopsmithDesktop.audio` and asks the native audio engine to load the same preset as a native NAM + IR chain. The processed signal is routed to your speakers while the song's guitar stem is automatically muted.
+
+### Slopsmith Desktop Native Mode
+
+When running inside Slopsmith Desktop, the plugin automatically prefers the native audio engine if the required Desktop bridge APIs are available. Presets are translated by the backend route `/api/plugins/nam_tone/native-preset/{preset_id}` into the native signal-chain JSON format expected by `window.slopsmithDesktop.audio.loadPreset()`.
+
+Native mode keeps the existing browser/WASM path as a fallback. If the Desktop bridge is unavailable, the plugin behaves like the browser version.
+
+The NAM settings panel can configure Desktop native input, output, sample rate, and buffer size directly through the same bridge. It does not depend on the Audio Engine plugin screen being installed, though both UIs share the same saved Desktop audio device settings.
+
+The status panel shows the active mode and the live device-reported native latency from Slopsmith Desktop. This is the driver/device latency reported by the audio backend; physical round-trip calibration requires a separate loopback test and is intentionally not part of this plugin path.
 
 ### NAM Models
 
@@ -40,18 +62,34 @@ When playing sloppak songs with separated stems, enabling AMP automatically mute
 1. **Upload models**: Go to the NAM config screen → upload `.nam` files
 2. **Upload IRs**: Upload `.wav` cabinet impulse response files
 3. **Create presets**: Combine a model + IR with gain and gate settings
-4. **Select input device**: In settings, choose your USB audio interface
-5. **Play**: Open a song, click the **AMP** button in player controls
+4. **Test presets**: Use the Test button on any preset to audition it; the active button changes to Stop while the test is running.
+5. **Select input device**: In browser mode, choose your USB audio interface in plugin settings. In Desktop native mode, use the Desktop Native Device controls in the NAM settings panel.
+6. **Play**: Open a song, click the **AMP** button in player controls
 
 ## Settings
 
-- **Input Device** — Select your USB audio interface
+- **Input Device** — Select your USB audio interface for browser/Web Audio mode
+- **Desktop Native Device** — Select Slopsmith Desktop native device type, input, output, sample rate, and buffer size when the Desktop bridge is available
 - **Input Channel** — Mono (mix), Left only, or Right only
 - **Input Gain** — Adjust input sensitivity (1.0 = unity)
 - **Output Gain** — Master volume for processed signal
 - **Noise Gate** — Threshold in dBFS to cut noise when not playing
 - **Latency Offset** — Compensate for audio processing delay
 - **Auto-mute guitar stem** — Mute the song's guitar stem when AMP is active
+
+In Desktop native mode, device settings, input channel, and noise gate settings are forwarded to the native audio engine. Saved native device settings are applied before the plugin starts the native NAM chain.
+
+Preset tests are stopped automatically when you leave the NAM screen so an auditioned tone cannot keep owning the input while you browse elsewhere.
+
+## Backup and Restore
+
+The plugin manifest opts into Slopsmith's Settings export/import flow for:
+
+- `nam_tone.db` — presets and tone mappings
+- `nam_models/` — uploaded NAM model files
+- `nam_irs/` — uploaded cabinet IR files
+
+These files live under Slopsmith's plugin config directory and are restored by Slopsmith's settings import flow.
 
 ## Tone Mapping
 
@@ -65,9 +103,9 @@ When playing sloppak songs with separated stems, enabling AMP automatically mute
 ```
 plugins/nam_tone/
   plugin.json              # Plugin manifest
-  routes.py                # Backend: SQLite DB, file upload, WASM serving
+  routes.py                # Backend: SQLite DB, file upload, native preset JSON, WASM serving
   screen.html              # Config screen UI
-  screen.js                # Signal chain, tone switching, stem ducking, UI
+  screen.js                # Browser/native signal chain selection, tone switching, stem ducking, UI
   settings.html            # Inline settings panel
   worklet/
     nam-processor.js       # AudioWorkletProcessor (runs WASM inference)
