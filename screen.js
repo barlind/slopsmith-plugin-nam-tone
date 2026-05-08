@@ -513,9 +513,18 @@ function _namWasmLatencyText() {
     const deviceLabel = _namSelectedBrowserDeviceLabel();
     const sampleRate = _namCtx ? _namFormatSampleRate(_namCtx.sampleRate) : 'sample rate N/A';
     const prefix = `Browser WASM - ${deviceLabel} @ ${sampleRate}`;
-    if (!_namCtx) return `${prefix} | Reported latency: N/A`;
-    const latency = Number(_namCtx.baseLatency || 0) + Number(_namCtx.outputLatency || 0);
-    return `${prefix} | Reported latency: ${latency > 0 ? _namFormatMs(latency * 1000) : 'N/A'}`;
+    return `${prefix} | Reported latency: ${_namWasmLatencyBreakdown()}`;
+}
+
+function _namWasmLatencyBreakdown() {
+    if (!_namCtx) return 'N/A (buffer size: browser-managed)';
+    const baseMs = Number(_namCtx.baseLatency || 0) * 1000;
+    const outputMs = Number(_namCtx.outputLatency || 0) * 1000;
+    const totalMs = baseMs + outputMs;
+    const totalText = totalMs > 0 ? _namFormatMs(totalMs) : 'N/A';
+    const baseText = baseMs > 0 ? _namFormatMs(baseMs) : 'N/A';
+    const outputText = outputMs > 0 ? _namFormatMs(outputMs) : 'N/A';
+    return `${totalText} (base ${baseText} + output ${outputText}; buffer size: browser-managed)`;
 }
 
 function _namUpdateSettingsPresetTestStatus() {
@@ -1488,7 +1497,7 @@ function _namUpdateStatus() {
     const modeClass = isNativeActive ? 'text-green-400' : 'text-yellow-400';
     const latencyText = isNativeActive
         ? (_namNativeLatencyText || 'Reported latency: N/A')
-        : (_namCtx ? Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000) + 'ms' : 'N/A');
+        : _namWasmLatencyBreakdown();
 
     el.innerHTML = `
         <div class="bg-dark-700/50 border border-gray-800/50 rounded-xl p-3 flex flex-wrap items-center gap-4 text-xs">
