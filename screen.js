@@ -1242,7 +1242,7 @@ async function _namRestoreTestBackup() {
             restored = true;
         }
         if (!restored && _namGraphActive()) {
-            _namTeardown();
+            await _namTeardown();
             _namEnabled = true;
             _namCurrentPreset = null;
             _namCurrentTone = null;
@@ -1268,16 +1268,16 @@ function _namRestoreGuitarStem() {
 
 // ── Teardown ───────────────────────────────────────────────────────────────
 
-function _namTeardown() {
+async function _namTeardown() {
     if (_namNativeMode) {
         const api = _namDesktopAudio();
         if (api) {
-            Promise.resolve(api.clearChain()).catch(e => console.warn('[NAM] Native clear failed:', e));
+            await Promise.resolve(api.clearChain()).catch(e => console.warn('[NAM] Native clear failed:', e));
             if (_namNativeStartedAudio && typeof api.stopAudio === 'function') {
-                Promise.resolve(api.stopAudio()).catch(e => console.warn('[NAM] Native stop failed:', e));
+                await Promise.resolve(api.stopAudio()).catch(e => console.warn('[NAM] Native stop failed:', e));
             }
             if (typeof api.setMonitorMute === 'function') {
-                Promise.resolve(api.setMonitorMute(true)).catch(() => {});
+                await Promise.resolve(api.setMonitorMute(true)).catch(() => {});
             }
         }
         _namNativeReady = false;
@@ -1318,7 +1318,7 @@ function _namInjectButton() {
     _namUpdateAmpButton();
 }
 
-function _namToggle() {
+async function _namToggle() {
     _namEnabled = !_namEnabled;
     if (!_namEnabled) {
         if (_namTestBackup) {
@@ -1337,7 +1337,7 @@ function _namToggle() {
             _namBuilding = false;
             _namEnabled = false;
             _namRestoreGuitarStem();
-            _namTeardown();
+            _namTeardown().catch(err => console.warn('[NAM] Teardown after build failure failed:', err));
             _namUpdateAmpButton();
             _namUpdatePresetTestButtons();
             _namUpdateStatus();
@@ -1346,7 +1346,7 @@ function _namToggle() {
     } else {
         _namCurrentPreset = null;
         _namCurrentTone = null;
-        _namTeardown();
+        await _namTeardown();
         _namUpdatePresetTestButtons();
     }
 }
@@ -1707,11 +1707,16 @@ window.namStartPresetTest = async function(presetId) {
         _namTestMode = false;
         _namTestPresetId = null;
         _namBuilding = false;
-        _namTeardown();
-        await _namRestoreTestBackup();
-        _namUpdateAmpButton();
-        _namUpdatePresetTestButtons();
-        _namUpdateStatus();
+        try {
+            await _namTeardown();
+            await _namRestoreTestBackup();
+        } catch (restoreError) {
+            console.error('[NAM] Failed to restore preset test context:', restoreError);
+        } finally {
+            _namUpdateAmpButton();
+            _namUpdatePresetTestButtons();
+            _namUpdateStatus();
+        }
         _namSetSettingsPresetTestStatus('Test failed', 'error');
     }
 };
@@ -1728,13 +1733,24 @@ window.namStopPresetTest = async function() {
     _namTestMode = false;
     _namTestPresetId = null;
     const wasEnabled = _namTestBackup && _namTestBackup.enabled;
-    if (!wasEnabled) _namTeardown();
-    await _namRestoreTestBackup();
-    if (!wasEnabled) _namEnabled = false;
-    _namUpdateAmpButton();
-    _namUpdatePresetTestButtons();
-    _namUpdateStatus();
-    _namUpdateSettingsPresetTestStatus();
+    let restoreFailed = false;
+    try {
+        if (!wasEnabled) await _namTeardown();
+        await _namRestoreTestBackup();
+        if (!wasEnabled) _namEnabled = false;
+    } catch (e) {
+        restoreFailed = true;
+        console.error('[NAM] Failed to restore preset test context:', e);
+    } finally {
+        _namUpdateAmpButton();
+        _namUpdatePresetTestButtons();
+        _namUpdateStatus();
+        if (restoreFailed) {
+            _namSetSettingsPresetTestStatus('Restore failed', 'error');
+        } else {
+            _namUpdateSettingsPresetTestStatus();
+        }
+    }
 };
 
 window.namSearchSongs = async function() {
@@ -1885,7 +1901,7 @@ async function _namRebuildActiveGraphForEngineChange() {
     if (!_namEnabled) return;
     const preset = _namCurrentPreset;
     _namSetSettingsPresetTestStatus('Switching...');
-    _namTeardown();
+    await _namTeardown();
     _namCurrentPreset = preset;
     await _namBuildGraph();
     if (_namTestMode && preset) {
@@ -1925,7 +1941,7 @@ window.namSetEngineMode = async function(mode) {
         console.error('[NAM] Engine switch failed:', e);
         _namBuilding = false;
         _namEnabled = false;
-        _namTeardown();
+        _namTeardown().catch(err => console.warn('[NAM] Teardown after engine switch failed:', err));
         _namUpdateAmpButton();
         _namUpdatePresetTestButtons();
         _namUpdateStatus();
@@ -2041,6 +2057,9 @@ window.namPopulateNativeDevices = async function(forceRefresh = false) {
         });
         _namSetNativeDeviceStatus(forceRefresh ? 'Options refreshed' : 'Options ready', 'ok');
         _namUpdateNativeApplyButtonState();
+    } catch (e) {
+        console.warn('[NAM] Native device populate failed:', e);
+        _namSetNativeDeviceStatus(forceRefresh ? 'Refresh failed' : 'Unavailable', 'error');
     } finally {
         _namSetNativeDeviceBusy(false);
         _namUpdateNativeApplyButtonState();
