@@ -123,7 +123,7 @@ function _namSetNativeDeviceStatus(text, kind = 'muted') {
     const el = document.getElementById('nam-native-device-status');
     if (!el) return;
     const color = kind === 'ok' ? 'text-green-400' : kind === 'error' ? 'text-red-400' : 'text-gray-500';
-    el.className = `text-[10px] ${color}`;
+    el.className = `sm:col-span-2 text-[10px] ${color}`;
     el.textContent = text;
 }
 
@@ -1483,9 +1483,10 @@ function _namUpdateStatus() {
     const supported = typeof AudioWorkletNode !== 'undefined';
     const wasmStatus = _namWasmReady ? 'Loaded' : 'Not loaded';
     const desktopApi = _namDesktopAudio();
-    const modeText = desktopApi ? (_namNativeMode ? 'Desktop Native' : 'Desktop Native available') : 'Browser WASM';
-    const modeClass = desktopApi ? 'text-green-400' : 'text-yellow-400';
-    const latencyText = _namNativeMode
+    const isNativeActive = !!desktopApi && (_namNativeMode || (!_namEnabled && _namEngineMode === 'native'));
+    const modeText = isNativeActive ? 'Desktop Native' : 'Browser WASM';
+    const modeClass = isNativeActive ? 'text-green-400' : 'text-yellow-400';
+    const latencyText = isNativeActive
         ? (_namNativeLatencyText || 'Reported latency: N/A')
         : (_namCtx ? Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000) + 'ms' : 'N/A');
 
