@@ -124,7 +124,7 @@
     <div id="nam-settings-preset-test-section" class="hidden mt-4 border-t border-gray-800 pt-3">
         <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3 mb-1">
             <label for="nam-settings-preset-select" class="text-[10px] text-gray-500 block">Test Preset</label>
-            <span id="nam-settings-preset-test-status" class="text-[10px] text-gray-500 sm:text-right">Idle</span>
+            <span id="nam-settings-preset-test-status" class="text-[10px] text-gray-500 sm:text-right" aria-live="polite" role="status">Idle</span>
         </div>
         <div class="flex items-center gap-2">
             <select id="nam-settings-preset-select" onchange="namSettingsPresetChanged()"
