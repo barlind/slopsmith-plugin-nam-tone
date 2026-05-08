@@ -53,6 +53,7 @@ let _namEngineMode = 'native'; // 'native' | 'wasm'
 let _namTestMode = false;
 let _namTestPresetId = null;
 let _namTestBackup = null;
+let _namSettingsPresetTestStatusHidden = false;
 
 const _namStorageKey = 'slopsmith_nam_tone';
 const _namNativeDeviceStorageKey = 'slopsmith-audio-device';
@@ -128,9 +129,18 @@ function _namSetNativeDeviceStatus(text, kind = 'muted') {
 function _namSetSettingsPresetTestStatus(text, kind = 'muted') {
     const el = document.getElementById('nam-settings-preset-test-status');
     if (!el) return;
+    _namSettingsPresetTestStatusHidden = false;
     const color = kind === 'ok' ? 'text-green-400' : kind === 'error' ? 'text-red-400' : 'text-gray-500';
-    el.className = `text-[10px] ${color}`;
+    el.className = `text-[10px] ${color} sm:text-right`;
     el.textContent = text;
+}
+
+function _namHideSettingsPresetTestStatus() {
+    _namSettingsPresetTestStatusHidden = true;
+    const el = document.getElementById('nam-settings-preset-test-status');
+    if (!el) return;
+    el.className = 'hidden text-[10px] text-gray-500';
+    el.textContent = '';
 }
 
 function _namSetNativeDeviceBusy(busy) {
@@ -415,13 +425,47 @@ function _namFormatMs(value) {
     return `${n.toFixed(n < 10 ? 2 : 1)}ms`;
 }
 
+function _namFormatSampleRate(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) return 'sample rate N/A';
+    if (n >= 1000) {
+        const khz = n / 1000;
+        return `${Number.isInteger(khz) ? khz.toFixed(0) : khz.toFixed(1)}K`;
+    }
+    return `${n}Hz`;
+}
+
+function _namSelectedBrowserDeviceLabel() {
+    const select = document.getElementById('nam-device-select');
+    const option = select && select.selectedOptions && select.selectedOptions[0];
+    const label = option && option.textContent ? option.textContent.trim() : '';
+    return label || 'Default input';
+}
+
+function _namNativeTestContext(device = null, requested = null) {
+    const type = (device && device.type) || (requested && requested.type) || 'Default driver';
+    const sampleRate = (device && device.sampleRate) || (requested && requested.sampleRate);
+    const bufferSize = (device && device.blockSize) || (requested && requested.bufferSize);
+    const timing = bufferSize
+        ? `${_namFormatSampleRate(sampleRate)}/${bufferSize}`
+        : _namFormatSampleRate(sampleRate);
+    return `Desktop Native - ${type} @ ${timing}`;
+}
+
 function _namWasmLatencyText() {
-    if (!_namCtx) return 'reported latency N/A';
+    const deviceLabel = _namSelectedBrowserDeviceLabel();
+    const sampleRate = _namCtx ? _namFormatSampleRate(_namCtx.sampleRate) : 'sample rate N/A';
+    const prefix = `Browser WASM - ${deviceLabel} @ ${sampleRate}`;
+    if (!_namCtx) return `${prefix} | Reported latency: N/A`;
     const latency = Number(_namCtx.baseLatency || 0) + Number(_namCtx.outputLatency || 0);
-    return latency > 0 ? `reported latency ${_namFormatMs(latency * 1000)}` : 'reported latency N/A';
+    return `${prefix} | Reported latency: ${latency > 0 ? _namFormatMs(latency * 1000) : 'N/A'}`;
 }
 
 function _namUpdateSettingsPresetTestStatus() {
+    if (_namSettingsPresetTestStatusHidden && !_namTestMode) {
+        _namHideSettingsPresetTestStatus();
+        return;
+    }
     if (!_namTestMode) {
         _namSetSettingsPresetTestStatus('Idle');
         return;
@@ -430,28 +474,21 @@ function _namUpdateSettingsPresetTestStatus() {
         _namSetSettingsPresetTestStatus('Starting...');
         return;
     }
-    const mode = _namNativeMode ? 'Desktop Native' : 'Browser WASM';
-    const latency = _namNativeMode ? (_namNativeLatencyText || 'reported latency N/A') : _namWasmLatencyText();
-    _namSetSettingsPresetTestStatus(`${mode} · ${latency}`, 'ok');
+    const status = _namNativeMode
+        ? (_namNativeLatencyText || `${_namNativeTestContext()} | Reported latency: N/A`)
+        : _namWasmLatencyText();
+    _namSetSettingsPresetTestStatus(status, 'ok');
 }
 
 async function _namRefreshNativeLatency(api, requested = null) {
     if (!api || typeof api.getCurrentDevice !== 'function') {
-        _namNativeLatencyText = 'reported latency N/A';
+        _namNativeLatencyText = `${_namNativeTestContext(null, requested)} | Reported latency: N/A`;
         return;
     }
     let device = null;
     try { device = await api.getCurrentDevice(); } catch (_) { device = null; }
     const reportedMs = device && Number(device.latencyMs);
-    const actualBuffer = device && Number(device.blockSize);
-    const requestedBuffer = requested && Number(requested.bufferSize);
-    const bufferChanged = Number.isFinite(actualBuffer)
-        && Number.isFinite(requestedBuffer)
-        && actualBuffer !== requestedBuffer;
-    const bufferText = Number.isFinite(actualBuffer)
-        ? (bufferChanged ? `buffer ${actualBuffer} (requested ${requestedBuffer})` : `buffer ${actualBuffer}`)
-        : 'buffer N/A';
-    _namNativeLatencyText = `reported latency ${_namFormatMs(reportedMs)}, ${bufferText}`;
+    _namNativeLatencyText = `${_namNativeTestContext(device, requested)} | Reported latency: ${_namFormatMs(reportedMs)}`;
     _namSetNativeDeviceStatus(_namNativeLatencyText, Number.isFinite(reportedMs) ? 'ok' : 'muted');
     _namUpdateSettingsPresetTestStatus();
     console.log('[NAM] Native desktop latency:',
@@ -525,7 +562,7 @@ async function _namApplyNativePreset(preset, api) {
 
     _namNativeReady = true;
     console.log('[NAM] Applied native desktop preset:', payload.name || preset.name || preset.preset_name,
-        'slots:', result.slotsLoaded, 'latency:', _namNativeLatencyText || 'reported latency N/A');
+        'slots:', result.slotsLoaded, 'latency:', _namNativeLatencyText || 'Reported latency: N/A');
     _namUpdateStatus();
 }
 
@@ -1392,7 +1429,7 @@ function _namUpdateStatus() {
     const modeText = desktopApi ? (_namNativeMode ? 'Desktop Native' : 'Desktop Native available') : 'Browser WASM';
     const modeClass = desktopApi ? 'text-green-400' : 'text-yellow-400';
     const latencyText = _namNativeMode
-        ? (_namNativeLatencyText || 'reported latency N/A')
+        ? (_namNativeLatencyText || 'Reported latency: N/A')
         : (_namCtx ? Math.round((_namCtx.baseLatency + _namCtx.outputLatency) * 1000) + 'ms' : 'N/A');
 
     el.innerHTML = `
@@ -1800,9 +1837,17 @@ async function _namRebuildActiveGraphForEngineChange() {
     _namUpdateSettingsPresetTestStatus();
 }
 
-window.namSetEngineMode = function(mode) {
+async function _namStopSettingsPresetTestForSettingChange() {
+    if (!_namTestMode) return false;
+    await window.namStopPresetTest();
+    _namHideSettingsPresetTestStatus();
+    return true;
+}
+
+window.namSetEngineMode = async function(mode) {
     const next = mode === 'wasm' ? 'wasm' : 'native';
     if (_namEngineMode === next) return;
+    await _namStopSettingsPresetTestForSettingChange();
     _namEngineMode = next;
     _namSaveSettings();
 
@@ -1838,12 +1883,14 @@ window.namTestSettingsPreset = async function() {
 };
 
 window.namSelectNativeDeviceType = async function(typeName) {
+    await _namStopSettingsPresetTestForSettingChange();
     const settings = _namNativeDeviceFormValues();
     _namRenderNativeDeviceDropdowns(typeName, settings.input, settings.output);
     await window.namRefreshNativeDeviceOptions();
 };
 
 window.namRefreshNativeDeviceOptions = async function(forceRefresh = false) {
+    await _namStopSettingsPresetTestForSettingChange();
     const api = _namDesktopAudio();
     if (!_namSupportsNativeDeviceSettings(api) || !await _namDesktopAudioAvailable(api)) {
         _namSetNativeDeviceStatus('Unavailable', 'error');
@@ -1864,7 +1911,12 @@ window.namRefreshNativeDeviceOptions = async function(forceRefresh = false) {
     }
 };
 
+window.namNativeDeviceSettingChanged = async function() {
+    await _namStopSettingsPresetTestForSettingChange();
+};
+
 window.namPopulateNativeDevices = async function(forceRefresh = false) {
+    if (forceRefresh) await _namStopSettingsPresetTestForSettingChange();
     const api = _namDesktopAudio();
     if (!_namSupportsNativeDeviceSettings(api) || !await _namDesktopAudioAvailable(api)) {
         _namUpdateEngineModeControls(false);
@@ -1917,6 +1969,7 @@ window.namPopulateNativeDevices = async function(forceRefresh = false) {
 };
 
 window.namApplyNativeDevice = async function() {
+    await _namStopSettingsPresetTestForSettingChange();
     const api = _namDesktopAudio();
     if (!_namSupportsNativeDeviceSettings(api) || !await _namDesktopAudioAvailable(api)) {
         _namSetNativeDeviceStatus('Unavailable', 'error');
@@ -1945,12 +1998,14 @@ window.namApplyNativeDevice = async function() {
     }
 };
 
-window.namSelectDevice = function(deviceId) {
+window.namSelectDevice = async function(deviceId) {
+    await _namStopSettingsPresetTestForSettingChange();
     _namDeviceId = deviceId;
     _namSaveSettings();
 };
 
-window.namSelectChannel = function(channel) {
+window.namSelectChannel = async function(channel) {
+    await _namStopSettingsPresetTestForSettingChange();
     _namChannel = channel;
     const api = _namDesktopAudio();
     if (_namNativeMode && api && typeof api.setInputChannel === 'function') {
