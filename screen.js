@@ -34,6 +34,7 @@ let _namNativeRecoverPending = false;
 let _namLastNativeRecoverAt = 0;
 let _namNativeDeviceTypes = [];
 let _namNativeDeviceOptionsCache = new Map();
+let _namNativeAppliedSettings = null;
 let _namSettingsPresetTestId = '';
 
 // Settings (persisted in localStorage)
@@ -230,7 +231,62 @@ function _namNativeDeviceFormValues() {
         output: document.getElementById('nam-native-output-device')?.value || '',
         sampleRate: document.getElementById('nam-native-sample-rate')?.value || '48000',
         bufferSize: document.getElementById('nam-native-buffer-size')?.value || '256',
+        channel: document.getElementById('nam-channel-select')?.value || _namChannel,
     };
+}
+
+function _namNormalizeNativeSettings(settings) {
+    const source = settings || {};
+    return {
+        type: String(source.type || ''),
+        input: String(source.input || ''),
+        output: String(source.output || ''),
+        sampleRate: String(Number(source.sampleRate || 0) || ''),
+        bufferSize: String(Number(source.bufferSize || 0) || ''),
+        channel: String(source.channel || _namChannel || 'mono'),
+    };
+}
+
+function _namNativeSettingsFromDevice(device, fallback = null) {
+    return _namNormalizeNativeSettings({
+        ...(fallback || {}),
+        type: device && device.type ? device.type : (fallback && fallback.type),
+        input: device && device.input ? device.input : (fallback && fallback.input),
+        output: device && device.output ? device.output : (fallback && fallback.output),
+        sampleRate: device && device.sampleRate ? device.sampleRate : (fallback && fallback.sampleRate),
+        bufferSize: device && device.blockSize ? device.blockSize : (fallback && fallback.bufferSize),
+        channel: fallback && fallback.channel ? fallback.channel : _namChannel,
+    });
+}
+
+function _namNativeSettingsEqual(a, b) {
+    const left = _namNormalizeNativeSettings(a);
+    const right = _namNormalizeNativeSettings(b);
+    return left.type === right.type
+        && left.input === right.input
+        && left.output === right.output
+        && left.sampleRate === right.sampleRate
+        && left.bufferSize === right.bufferSize
+        && left.channel === right.channel;
+}
+
+function _namSetNativeApplyButtonState(dirty) {
+    const button = document.getElementById('nam-native-apply-button');
+    if (!button) return;
+    button.disabled = !dirty;
+    button.textContent = dirty ? 'Apply changes' : 'Applied';
+    button.title = dirty ? 'Apply the selected native audio settings' : 'Current native audio settings are already applied';
+    button.className = dirty
+        ? 'flex-1 bg-green-700/50 hover:bg-green-700/70 rounded-lg px-3 py-2 text-xs text-green-100 transition'
+        : 'flex-1 bg-dark-700 rounded-lg px-3 py-2 text-xs text-gray-500 transition opacity-60 cursor-not-allowed';
+}
+
+function _namUpdateNativeApplyButtonState() {
+    if (!_namNativeAppliedSettings) {
+        _namSetNativeApplyButtonState(true);
+        return;
+    }
+    _namSetNativeApplyButtonState(!_namNativeSettingsEqual(_namNativeDeviceFormValues(), _namNativeAppliedSettings));
 }
 
 function _namNativeDeviceOptionsKey(settings) {
@@ -247,6 +303,7 @@ function _namActualNativeDeviceSettings(requested, actual) {
     const settings = { ...(requested || {}) };
     if (actual && actual.sampleRate) settings.sampleRate = String(actual.sampleRate);
     if (actual && actual.blockSize) settings.bufferSize = String(actual.blockSize);
+    if (requested && requested.channel) settings.channel = requested.channel;
     return settings;
 }
 
@@ -1815,6 +1872,9 @@ function _namInitSettingsControls() {
         console.warn('[NAM] Native device populate failed:', e);
         _namSetNativeDeviceStatus('Unavailable', 'error');
     });
+    if (!nativeAvailable || _namEngineMode === 'wasm') window.namPopulateDevices().catch(e => {
+        console.warn('[NAM] Browser device populate failed:', e);
+    });
     _namPopulateSettingsPresetSelector().catch(e => {
         console.warn('[NAM] Settings preset test populate failed:', e);
     });
@@ -1856,6 +1916,9 @@ window.namSetEngineMode = async function(mode) {
         console.warn('[NAM] Native device populate failed:', e);
         _namSetNativeDeviceStatus('Unavailable', 'error');
     });
+    if (_namEngineMode === 'wasm') window.namPopulateDevices().catch(e => {
+        console.warn('[NAM] Browser device populate failed:', e);
+    });
 
     _namRebuildActiveGraphForEngineChange().catch(e => {
         console.error('[NAM] Engine switch failed:', e);
@@ -1886,6 +1949,7 @@ window.namSelectNativeDeviceType = async function(typeName) {
     await _namStopSettingsPresetTestForSettingChange();
     const settings = _namNativeDeviceFormValues();
     _namRenderNativeDeviceDropdowns(typeName, settings.input, settings.output);
+    _namUpdateNativeApplyButtonState();
     await window.namRefreshNativeDeviceOptions();
 };
 
@@ -1903,16 +1967,19 @@ window.namRefreshNativeDeviceOptions = async function(forceRefresh = false) {
         const settings = _namNativeDeviceFormValues();
         await _namRefreshNativeDeviceTimingControls(api, null, settings, true, forceRefresh);
         _namSetNativeDeviceStatus(forceRefresh ? 'Options refreshed' : 'Options ready', 'ok');
+        _namUpdateNativeApplyButtonState();
     } catch (e) {
         console.warn('[NAM] Native buffer refresh failed:', e);
         _namSetNativeDeviceStatus('Refresh failed', 'error');
     } finally {
         _namSetNativeDeviceBusy(false);
+        _namUpdateNativeApplyButtonState();
     }
 };
 
 window.namNativeDeviceSettingChanged = async function() {
     await _namStopSettingsPresetTestForSettingChange();
+    _namUpdateNativeApplyButtonState();
 };
 
 window.namPopulateNativeDevices = async function(forceRefresh = false) {
@@ -1961,10 +2028,21 @@ window.namPopulateNativeDevices = async function(forceRefresh = false) {
             output: selectedDevices.output,
             sampleRate,
             bufferSize,
+            channel: _namChannel,
         }, true, forceRefresh);
+        _namNativeAppliedSettings = _namNativeSettingsFromDevice(current, {
+            type,
+            input: selectedDevices.input,
+            output: selectedDevices.output,
+            sampleRate,
+            bufferSize,
+            channel: _namChannel,
+        });
         _namSetNativeDeviceStatus(forceRefresh ? 'Options refreshed' : 'Options ready', 'ok');
+        _namUpdateNativeApplyButtonState();
     } finally {
         _namSetNativeDeviceBusy(false);
+        _namUpdateNativeApplyButtonState();
     }
 };
 
@@ -1989,12 +2067,16 @@ window.namApplyNativeDevice = async function() {
         const actualDevice = await api.getCurrentDevice().catch(() => null);
         _namRememberAcceptedNativeBuffer(settings, actualDevice);
         const actual = await _namRefreshNativeDeviceTimingControls(api, actualDevice, settings, false, false, true);
-        _namSaveNativeDeviceSettings(_namActualNativeDeviceSettings(settings, actual));
+        const appliedSettings = _namActualNativeDeviceSettings(settings, actual);
+        _namNativeAppliedSettings = _namNormalizeNativeSettings(appliedSettings);
+        _namSaveNativeDeviceSettings(appliedSettings);
         await _namRefreshNativeLatency(api, settings);
         _namSetNativeDeviceStatus(_namNativeLatencyText || 'Applied', 'ok');
         _namUpdateStatus();
+        _namUpdateNativeApplyButtonState();
     } finally {
         _namSetNativeDeviceBusy(false);
+        _namUpdateNativeApplyButtonState();
     }
 };
 
@@ -2007,11 +2089,8 @@ window.namSelectDevice = async function(deviceId) {
 window.namSelectChannel = async function(channel) {
     await _namStopSettingsPresetTestForSettingChange();
     _namChannel = channel;
-    const api = _namDesktopAudio();
-    if (_namNativeMode && api && typeof api.setInputChannel === 'function') {
-        api.setInputChannel(_namNativeInputChannel()).catch(e => console.warn('[NAM] Native channel update failed:', e));
-    }
     _namSaveSettings();
+    _namUpdateNativeApplyButtonState();
 };
 
 window.namSetInputGain = function(val) {
@@ -2076,6 +2155,7 @@ window.namPopulateDevices = async function() {
             if (d.deviceId === _namDeviceId) opt.selected = true;
             sel.appendChild(opt);
         }
+        sel.value = [...sel.options].some(opt => opt.value === _namDeviceId) ? _namDeviceId : '';
     } catch (e) { /* permission not yet granted */ }
 };
 

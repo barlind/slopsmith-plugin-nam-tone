@@ -75,12 +75,15 @@
             </div>
             <div class="flex items-end gap-2">
                 <button type="button" id="nam-native-refresh-button" onclick="namPopulateNativeDevices(true)"
+                    title="Refresh available native device types, input/output devices, sample rates, and buffer sizes"
+                    aria-label="Refresh native audio device types, input and output devices, sample rates, and buffer sizes"
                     class="flex-1 bg-dark-700 hover:bg-dark-600 rounded-lg px-3 py-2 text-xs text-gray-400 transition">
                     Refresh
                 </button>
                 <button type="button" id="nam-native-apply-button" onclick="namApplyNativeDevice()"
-                    class="flex-1 bg-dark-600 hover:bg-dark-500 rounded-lg px-3 py-2 text-xs text-gray-300 transition">
-                    Apply
+                    class="flex-1 bg-dark-700 rounded-lg px-3 py-2 text-xs text-gray-500 transition opacity-60 cursor-not-allowed" disabled
+                    title="Current native audio settings are already applied">
+                    Applied
                 </button>
             </div>
         </div>
