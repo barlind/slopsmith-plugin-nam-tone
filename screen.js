@@ -620,6 +620,7 @@ async function _namApplyNativePreset(preset, api) {
     _namNativeReady = true;
     console.log('[NAM] Applied native desktop preset:', payload.name || preset.name || preset.preset_name,
         'slots:', result.slotsLoaded, 'latency:', _namNativeLatencyText || 'Reported latency: N/A');
+    _namDuckGuitarStem();
     _namUpdateStatus();
 }
 
@@ -1193,23 +1194,266 @@ setInterval(_namCheckToneChange, 100);
 // ── Guitar Stem Ducking ────────────────────────────────────────────────────
 
 let _namDuckedStems = [];
+let _namStemDuckRetryTimer = null;
+let _namStemClaimId = null;
+let _namLastStemDuckResult = null;
+let _namStemDuckingShim = false;
+const _namRegisteredStemShims = new Set();
 
-function _namDuckGuitarStem() {
-    if (!_namDuckGuitar || !_namEnabled) return;
-    const stems = window._stemsState;
-    if (!stems) return;
-    _namDuckedStems = [];
-    for (const s of stems) {
-        if (/guitar/i.test(s.id) && s.gain) {
-            _namDuckedStems.push({ stem: s, prevGain: s.gain.gain.value });
-            s.gain.gain.value = 0;
+function _namCapabilities() {
+    const api = window.slopsmith && window.slopsmith.capabilities;
+    return api && typeof api.command === 'function' ? api : null;
+}
+
+function _namEnsureStemClaim() {
+    if (!_namStemClaimId) {
+        const token = Math.random().toString(36).slice(2);
+        _namStemClaimId = `nam_tone:${Date.now()}:${token}`;
+    }
+    return _namStemClaimId;
+}
+
+function _namRegisterStemShim(legacySurface, reason) {
+    const api = window.slopsmith && window.slopsmith.capabilities;
+    const shimId = `nam_tone:${legacySurface}`;
+    _namStemDuckingShim = true;
+    if (!api || typeof api.registerCompatibilityShim !== 'function' || _namRegisteredStemShims.has(shimId)) return;
+    _namRegisteredStemShims.add(shimId);
+    api.registerCompatibilityShim({
+        shimId,
+        source: 'nam_tone',
+        capability: 'stems',
+        legacySurface,
+        reason,
+    });
+}
+
+function _namStemState() {
+    const stemsApi = window.stems;
+    if (stemsApi && typeof stemsApi.getState === 'function') {
+        try {
+            const stems = stemsApi.getState();
+            if (Array.isArray(stems) && stems.length) return stems;
+        } catch (e) {
+            console.warn('[NAM] Could not read stems state:', e);
         }
     }
+    if (stemsApi && Array.isArray(stemsApi.stemState) && stemsApi.stemState.length) return stemsApi.stemState;
+    if (Array.isArray(window._stemsState) && window._stemsState.length) return window._stemsState;
+    const domStems = _namDomStemState();
+    if (domStems.length) return domStems;
+    return [];
+}
+
+function _namDomStemState() {
+    const mixer = document.getElementById('stems-mixer');
+    if (!mixer) return [];
+    return Array.from(mixer.querySelectorAll('button'))
+        .map(button => ({
+            id: button.textContent.trim(),
+            button,
+            on: _namDomStemButtonOn(button),
+            domOnly: true,
+        }))
+        .filter(stem => stem.id);
+}
+
+function _namDomStemButtonOn(button) {
+    const className = String(button && button.className || '');
+    return className.includes('text-accent-light') || className.includes('bg-accent');
+}
+
+function _namStemGainParam(stem) {
+    return stem && stem.gain && stem.gain.gain;
+}
+
+function _namSetStemMuted(stem, muted) {
+    const stemsApi = window.stems;
+    if (stemsApi && typeof stemsApi.setMuted === 'function' && stem && stem.id) {
+        try {
+            _namRegisterStemShim('window.stems.setMuted', 'Capability dispatcher unavailable or degraded');
+            stemsApi.setMuted(stem.id, muted);
+            return true;
+        } catch (e) {
+            console.warn('[NAM] Could not set stem mute through Stems API:', e);
+        }
+    }
+    if (stem && stem.button) {
+        _namRegisterStemShim('stems-mixer.button', 'Using Stems mixer DOM fallback');
+        const isOn = _namDomStemButtonOn(stem.button);
+        if ((muted && isOn) || (!muted && !isOn)) {
+            stem.button.click();
+        }
+        return true;
+    }
+    return false;
+}
+
+function _namIsGuitarStem(stem) {
+    const id = String(stem && stem.id || '').toLowerCase();
+    return /(^|[-_\s])(guitars?|rhythm|lead|dist|distortion)([-_\s]|$)/i.test(id);
+}
+
+function _namIsOtherStem(stem) {
+    return String(stem && stem.id || '').toLowerCase() === 'other';
+}
+
+function _namGuitarStemTargets(stems) {
+    const guitarStems = stems.filter(_namIsGuitarStem);
+    return guitarStems.length ? guitarStems : stems.filter(_namIsOtherStem);
+}
+
+function _namDebugStemDuckingState() {
+    const stems = _namStemState();
+    const targets = _namGuitarStemTargets(stems);
+    const stemsApi = window.stems;
+    return {
+        enabled: _namEnabled,
+        duckGuitar: _namDuckGuitar,
+        hasStemsApi: !!stemsApi,
+        hasGetState: !!(stemsApi && typeof stemsApi.getState === 'function'),
+        hasSetMuted: !!(stemsApi && typeof stemsApi.setMuted === 'function'),
+        hasStemsMixer: !!document.getElementById('stems-mixer'),
+        stemIds: stems.map(stem => stem.id),
+        targetIds: targets.map(stem => stem.id),
+        duckedIds: _namDuckedStems.map(stem => stem.id),
+        claimId: _namStemClaimId,
+        usingShim: _namStemDuckingShim,
+        lastCapabilityResult: _namLastStemDuckResult,
+    };
+}
+
+function _namFindCurrentStem(ducked) {
+    const stems = _namStemState();
+    return stems.find(stem => ducked.gain && _namStemGainParam(stem) === ducked.gain)
+        || stems.find(stem => stem && ducked.id && stem.id === ducked.id)
+        || ducked.stem;
+}
+
+function _namRestoreDuckedStem(ducked) {
+    const stem = _namFindCurrentStem(ducked);
+    if (stem && ducked.usedStemsApi && typeof ducked.prevOn === 'boolean' && _namSetStemMuted(stem, !ducked.prevOn)) {
+        return;
+    }
+    const gainParam = _namStemGainParam(stem) || ducked.gain;
+    if (!gainParam) return;
+    if (stem && typeof stem.on === 'boolean' && typeof stem.vol === 'number') {
+        gainParam.value = stem.on ? stem.vol : 0;
+        return;
+    }
+    gainParam.value = ducked.prevGain;
+}
+
+function _namScheduleStemDuckRetry(attempts) {
+    if (attempts <= 0 || !_namDuckGuitar || !_namEnabled || _namStemDuckRetryTimer) return;
+    _namStemDuckRetryTimer = setTimeout(() => {
+        _namStemDuckRetryTimer = null;
+        _namDuckGuitarStem(attempts - 1);
+    }, 150);
+}
+
+function _namHandledPayload(result) {
+    if (result && result.payload && typeof result.payload === 'object') return result.payload;
+    if (!result || !Array.isArray(result.decisions)) return {};
+    const handled = result.decisions.find(d => d.outcome === 'handled' && d.payload)
+        || result.decisions.find(d => d.payload);
+    return handled && handled.payload ? handled.payload : {};
+}
+
+function _namUpdateCapabilityDuckedState(result) {
+    const payload = _namHandledPayload(result);
+    const ids = Array.isArray(payload.mutedIds) ? payload.mutedIds : [];
+    _namDuckedStems = ids.map(id => ({
+        id,
+        key: `capability:${payload.claimId || _namStemClaimId}:${id}`,
+        claimId: payload.claimId || _namStemClaimId,
+        viaCapability: true,
+    }));
+}
+
+function _namDuckGuitarStemLegacy(attempts = 20) {
+    if (!_namDuckGuitar || !_namEnabled) return false;
+    const stems = _namStemState();
+    if (!stems.length) {
+        _namScheduleStemDuckRetry(attempts);
+        return false;
+    }
+    const previousDucks = new Map(_namDuckedStems.map(ducked => [ducked.key, ducked]));
+    const nextDucks = [];
+    const targets = _namGuitarStemTargets(stems);
+    if (!targets.length) {
+        _namScheduleStemDuckRetry(attempts);
+        return false;
+    }
+    for (const s of targets) {
+        const gainParam = _namStemGainParam(s);
+        if (gainParam || s.button || (window.stems && typeof window.stems.setMuted === 'function')) {
+            const key = gainParam || s.button || `id:${s.id}`;
+            const previous = previousDucks.get(key);
+            nextDucks.push({
+                stem: s,
+                id: s.id,
+                key,
+                gain: gainParam,
+                prevOn: previous ? previous.prevOn : s.on,
+                prevGain: previous ? previous.prevGain : (gainParam ? gainParam.value : 0),
+                usedStemsApi: previous ? previous.usedStemsApi : false,
+            });
+            const ducked = nextDucks[nextDucks.length - 1];
+            ducked.usedStemsApi = _namSetStemMuted(s, true);
+            if (!ducked.usedStemsApi && gainParam) gainParam.value = 0;
+        }
+    }
+    const activeKeys = new Set(nextDucks.map(ducked => ducked.key));
+    for (const ducked of _namDuckedStems) {
+        if (!activeKeys.has(ducked.key)) _namRestoreDuckedStem(ducked);
+    }
+    _namDuckedStems = nextDucks;
+    _namStemDuckingShim = _namDuckedStems.length > 0;
+    return _namDuckedStems.length > 0;
+}
+
+function _namDuckGuitarStem(attempts = 20) {
+    if (!_namDuckGuitar || !_namEnabled) return false;
+    const api = _namCapabilities();
+    if (!api) return _namDuckGuitarStemLegacy(attempts);
+
+    const claimId = _namEnsureStemClaim();
+    api.command('stems', 'mute', {
+        requester: 'nam_tone',
+        origin: 'automation',
+        reason: 'NAM AMP is enabled',
+        payload: {
+            claimId,
+            filename: _namCurrentFilename,
+            target: { kind: 'guitar' },
+            reason: 'NAM AMP is enabled',
+        },
+    }).then(result => {
+        _namLastStemDuckResult = result;
+        if (result && result.outcome === 'handled') {
+            _namStemDuckingShim = false;
+            _namUpdateCapabilityDuckedState(result);
+            return;
+        }
+        if (result && result.outcome === 'denied') return;
+        _namDuckGuitarStemLegacy(attempts);
+    }).catch(err => {
+        _namLastStemDuckResult = { outcome: 'failed', reason: err && err.message ? err.message : String(err) };
+        _namDuckGuitarStemLegacy(attempts);
+    });
+    return true;
 }
 
 window.addEventListener('stems:state', () => {
     if (_namEnabled && _namDuckGuitar) _namDuckGuitarStem();
 });
+
+window.namDebugStemDucking = function() {
+    const state = _namDebugStemDuckingState();
+    console.info('[NAM] Stem ducking state:', JSON.stringify(state));
+    return state;
+};
 
 function _namCaptureTestBackup() {
     if (_namTestBackup) return;
@@ -1257,13 +1501,36 @@ function _namRestoreTestContext(backup) {
     _namCurrentPreset = backup.currentPreset;
 }
 
-function _namRestoreGuitarStem() {
-    for (const d of _namDuckedStems) {
-        if (d.stem.gain) {
-            d.stem.gain.gain.value = d.stem.on ? d.stem.vol : 0;
+async function _namRestoreGuitarStem() {
+    if (_namStemDuckRetryTimer) {
+        clearTimeout(_namStemDuckRetryTimer);
+        _namStemDuckRetryTimer = null;
+    }
+
+    const api = _namCapabilities();
+    const claimId = _namStemClaimId;
+    const hasLegacyDucks = _namDuckedStems.some(d => !d.viaCapability);
+    if (api && claimId) {
+        try {
+            _namLastStemDuckResult = await api.command('stems', 'restore', {
+                requester: 'nam_tone',
+                origin: 'automation',
+                reason: 'NAM AMP is disabled',
+                payload: { claimId, filename: _namCurrentFilename, reason: 'NAM AMP is disabled' },
+            });
+        } catch (err) {
+            _namLastStemDuckResult = { outcome: 'failed', reason: err && err.message ? err.message : String(err) };
+        }
+    }
+
+    if (!api || hasLegacyDucks) {
+        for (const d of _namDuckedStems) {
+            if (!d.viaCapability) _namRestoreDuckedStem(d);
         }
     }
     _namDuckedStems = [];
+    _namStemClaimId = null;
+    _namStemDuckingShim = false;
 }
 
 // ── Teardown ───────────────────────────────────────────────────────────────
@@ -1298,7 +1565,7 @@ async function _namTeardown() {
     if (_namBypassGain) { try { _namBypassGain.disconnect(); } catch (_) {} _namBypassGain = null; }
     if (_namOutputGain) { try { _namOutputGain.disconnect(); } catch (_) {} _namOutputGain = null; }
     // Keep _namCtx and _namWorkletNode alive for reuse
-    _namRestoreGuitarStem();
+    await _namRestoreGuitarStem();
 }
 
 // ── Player Controls ────────────────────────────────────────────────────────
@@ -1320,6 +1587,7 @@ function _namInjectButton() {
 
 async function _namToggle() {
     _namEnabled = !_namEnabled;
+    if (_namEnabled) _namEnsureStemClaim();
     if (!_namEnabled) {
         if (_namTestBackup) {
             _namRestoreTestContext(_namTestBackup);
@@ -1336,7 +1604,6 @@ async function _namToggle() {
         }).catch(e => {
             _namBuilding = false;
             _namEnabled = false;
-            _namRestoreGuitarStem();
             _namTeardown().catch(err => console.warn('[NAM] Teardown after build failure failed:', err));
             _namUpdateAmpButton();
             _namUpdatePresetTestButtons();
@@ -1360,6 +1627,8 @@ async function _namToggle() {
         _namInjectButton();
         _namLoadMappings(filename);
         if (_namEnabled) {
+            _namStemClaimId = null;
+            _namEnsureStemClaim();
             _namDuckGuitarStem();
         }
     };

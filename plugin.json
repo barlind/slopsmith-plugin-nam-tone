@@ -6,6 +6,34 @@
   "nav": { "label": "NAM", "screen": "nam-tone" },
   "screen": "screen.html",
   "script": "screen.js",
+  "capabilities": {
+    "stems": {
+      "roles": ["requester", "observer"],
+      "commands": ["mute", "restore"],
+      "events": ["provider-ready", "provider-unavailable", "state-changed", "user-override"],
+      "order": { "after": ["stems"] },
+      "mode": "active",
+      "compatibility": "degrade-noop"
+    },
+    "audio-monitoring": {
+      "roles": ["requester"],
+      "commands": ["start", "stop"],
+      "mode": "optional",
+      "compatibility": "degrade-noop"
+    },
+    "audio-mix": {
+      "roles": ["contributor"],
+      "commands": ["register-participant"],
+      "mode": "active",
+      "compatibility": "none"
+    },
+    "ui.player-controls": {
+      "roles": ["contributor"],
+      "commands": ["register-contribution"],
+      "mode": "active",
+      "compatibility": "none"
+    }
+  },
   "settings": {
     "html": "settings.html",
     "server_files": ["nam_tone.db", "nam_models/", "nam_irs/"]

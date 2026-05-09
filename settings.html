@@ -145,13 +145,15 @@
         </p>
     </div>
 
-    <!-- Guitar Stem Ducking -->
+    <!-- Stems Capability Ducking -->
     <div class="flex items-center gap-3 mt-4 border-t border-gray-800 pt-3">
-        <label for="nam-duck-guitar" class="flex items-center gap-2 text-sm text-gray-300">
+        <label for="nam-duck-guitar" class="flex items-center gap-2 text-sm text-gray-300"
+               title="Requests the Stems capability to mute guitar while AMP is on; on 4-stem songs without a guitar stem, Stems may target Other because guitar is usually bundled there. Manual stem changes are respected for the current AMP session.">
             <input type="checkbox" id="nam-duck-guitar" checked
                    onchange="namSetDuckGuitar(this.checked)"
+                   aria-label="Request guitar stem mute through Stems while AMP is on. Manual stem changes are respected for the current AMP session."
                    class="accent-accent">
-            Auto-mute guitar stem when AMP is active
+            Mute guitar stem while AMP is on
         </label>
     </div>
 </div>

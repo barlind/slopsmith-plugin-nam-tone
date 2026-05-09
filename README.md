@@ -55,7 +55,7 @@ Songs can have multiple tones (e.g., Clean, Distortion, Lead). You can map each 
 
 ### Guitar Stem Ducking
 
-When playing sloppak songs with separated stems, enabling AMP automatically mutes the guitar stem so you only hear your own playing through the amp model. The stem volume is restored when AMP is disabled. This can be toggled in settings.
+When playing sloppak songs with separated stems, enabling AMP asks the Stems capability provider to mute the guitar stem so you only hear your own playing through the amp model. On 4-stem songs without a dedicated guitar stem, Stems falls back to the `other` stem because guitar is usually bundled there. The prior stem state is restored when AMP is disabled. If you manually unmute or otherwise change a stem while AMP is on, that user action wins for the current AMP session and NAM will not re-mute it. This can be toggled with **Mute guitar stem while AMP is on** in settings. For fine-grained stem mix control, use the [Stems plugin](https://github.com/topkoa/slopsmith-plugin-stems). During migration, NAM still records and uses the legacy `window.stems` or mixer-button shim only when the capability dispatcher/provider is unavailable.
 
 ## Setup
 
@@ -75,7 +75,7 @@ When playing sloppak songs with separated stems, enabling AMP automatically mute
 - **Output Gain** — Master volume for processed signal
 - **Noise Gate** — Threshold in dBFS to cut noise when not playing
 - **Latency Offset** — Compensate for audio processing delay
-- **Auto-mute guitar stem** — Mute the song's guitar stem when AMP is active
+- **Mute guitar stem while AMP is on** — Requests the Stems capability to mute the song's guitar stem whenever AMP is enabled, while respecting manual stem changes for the current AMP session
 
 In Desktop native mode, device settings, input channel, and noise gate settings are forwarded to the native audio engine. Saved native device settings are applied before the plugin starts the native NAM chain.
 
