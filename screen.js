@@ -620,7 +620,6 @@ async function _namApplyNativePreset(preset, api) {
     _namNativeReady = true;
     console.log('[NAM] Applied native desktop preset:', payload.name || preset.name || preset.preset_name,
         'slots:', result.slotsLoaded, 'latency:', _namNativeLatencyText || 'Reported latency: N/A');
-    _namDuckGuitarStem();
     _namUpdateStatus();
 }
 
@@ -1189,7 +1188,17 @@ function _namCheckToneChange() {
     _namApplyCurrentSongTone(false);
 }
 
-setInterval(_namCheckToneChange, 100);
+function _namRuntimeHooks() {
+    return window.__slopsmithNamHooks || (window.__slopsmithNamHooks = {});
+}
+
+function _namInstallToneChangeInterval() {
+    const hookState = _namRuntimeHooks();
+    if (hookState.toneChangeInterval) clearInterval(hookState.toneChangeInterval);
+    hookState.toneChangeInterval = setInterval(_namCheckToneChange, 100);
+}
+
+_namInstallToneChangeInterval();
 
 // ── Guitar Stem Ducking ────────────────────────────────────────────────────
 
@@ -1281,9 +1290,7 @@ function _namSetStemMuted(stem, muted) {
     if (stem && stem.button) {
         _namRegisterStemShim('stems-mixer.button', 'Using Stems mixer DOM fallback');
         const isOn = _namDomStemButtonOn(stem.button);
-        if ((muted && isOn) || (!muted && !isOn)) {
-            stem.button.click();
-        }
+        if ((muted && isOn) || (!muted && !isOn)) stem.button.click();
         return true;
     }
     return false;
@@ -1445,9 +1452,20 @@ function _namDuckGuitarStem(attempts = 20) {
     return true;
 }
 
-window.addEventListener('stems:state', () => {
+function _namOnStemsState(event) {
+    const detail = event && event.detail ? event.detail : {};
+    if (detail.event !== 'provider-ready') return;
     if (_namEnabled && _namDuckGuitar) _namDuckGuitarStem();
-});
+}
+
+function _namInstallStemStateListener() {
+    const hookState = _namRuntimeHooks();
+    if (hookState.stemsStateListener) window.removeEventListener('stems:state', hookState.stemsStateListener);
+    hookState.stemsStateListener = _namOnStemsState;
+    window.addEventListener('stems:state', hookState.stemsStateListener);
+}
+
+_namInstallStemStateListener();
 
 window.namDebugStemDucking = function() {
     const state = _namDebugStemDuckingState();
@@ -1587,7 +1605,6 @@ function _namInjectButton() {
 
 async function _namToggle() {
     _namEnabled = !_namEnabled;
-    if (_namEnabled) _namEnsureStemClaim();
     if (!_namEnabled) {
         if (_namTestBackup) {
             _namRestoreTestContext(_namTestBackup);
@@ -1604,6 +1621,7 @@ async function _namToggle() {
         }).catch(e => {
             _namBuilding = false;
             _namEnabled = false;
+            _namRestoreGuitarStem();
             _namTeardown().catch(err => console.warn('[NAM] Teardown after build failure failed:', err));
             _namUpdateAmpButton();
             _namUpdatePresetTestButtons();
@@ -1621,30 +1639,44 @@ async function _namToggle() {
 // ── playSong Hook ──────────────────────────────────────────────────────────
 
 (function() {
-    const origPlaySong = window.playSong;
-    window.playSong = async function(filename, arrangement) {
-        await origPlaySong(filename, arrangement);
-        _namInjectButton();
-        _namLoadMappings(filename);
-        if (_namEnabled) {
-            _namStemClaimId = null;
-            _namEnsureStemClaim();
-            _namDuckGuitarStem();
-        }
+    const hookState = window.__slopsmithNamHooks || (window.__slopsmithNamHooks = {});
+    hookState.impl = {
+        afterPlaySong(filename) {
+            _namInjectButton();
+            _namLoadMappings(filename);
+            if (_namEnabled) {
+                _namDuckGuitarStem();
+            }
+        },
+        afterShowScreen(id) {
+            if (id === 'plugin-nam_tone') _namInitScreen();
+            if (id === 'settings') setTimeout(_namInitSettingsControls, 0);
+        },
+        beforeShowScreen(id) {
+            if (id !== 'plugin-nam_tone' && _namTestMode) {
+                window.namStopPresetTest();
+            }
+        },
     };
-})();
+    if (hookState.installed) return;
+    hookState.installed = true;
 
-// ── showScreen Hook ────────────────────────────────────────────────────────
+    const origPlaySong = window.playSong;
+    hookState.basePlaySong = origPlaySong;
+    window.playSong = async function(filename, arrangement) {
+        await hookState.basePlaySong.call(this, filename, arrangement);
+        const impl = hookState.impl;
+        if (impl && typeof impl.afterPlaySong === 'function') impl.afterPlaySong(filename, arrangement);
+    };
 
-(function() {
     const origShowScreen = window.showScreen;
+    hookState.baseShowScreen = origShowScreen;
     window.showScreen = function(id) {
-        if (id !== 'plugin-nam_tone' && _namTestMode) {
-            window.namStopPresetTest();
-        }
-        origShowScreen(id);
-        if (id === 'plugin-nam_tone') _namInitScreen();
-        if (id === 'settings') setTimeout(_namInitSettingsControls, 0);
+        const beforeImpl = hookState.impl;
+        if (beforeImpl && typeof beforeImpl.beforeShowScreen === 'function') beforeImpl.beforeShowScreen(id);
+        hookState.baseShowScreen.call(this, id);
+        const afterImpl = hookState.impl;
+        if (afterImpl && typeof afterImpl.afterShowScreen === 'function') afterImpl.afterShowScreen(id);
     };
 })();
 
