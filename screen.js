@@ -78,6 +78,10 @@ function _namLoadSettings() {
 
 _namLoadSettings();
 
+function _namRuntimeHooks() {
+    return window.__slopsmithNamHooks || (window.__slopsmithNamHooks = {});
+}
+
 // ── Mixer fader registration (slopsmith#87) ────────────────────────────────
 
 function _namRegisterFader() {
@@ -413,7 +417,13 @@ function _namCheckToneChange() {
     }
 }
 
-setInterval(_namCheckToneChange, 100);
+function _namInstallToneChangeInterval() {
+    const hookState = _namRuntimeHooks();
+    if (hookState.toneChangeInterval) clearInterval(hookState.toneChangeInterval);
+    hookState.toneChangeInterval = setInterval(_namCheckToneChange, 100);
+}
+
+_namInstallToneChangeInterval();
 
 // ── Guitar Stem Ducking ────────────────────────────────────────────────────
 
@@ -493,24 +503,36 @@ function _namToggle() {
 // ── playSong Hook ──────────────────────────────────────────────────────────
 
 (function() {
-    const origPlaySong = window.playSong;
-    window.playSong = async function(filename, arrangement) {
-        await origPlaySong(filename, arrangement);
-        _namInjectButton();
-        _namLoadMappings(filename);
-        if (_namEnabled) {
-            _namDuckGuitarStem();
-        }
+    const hookState = _namRuntimeHooks();
+    hookState.impl = {
+        afterPlaySong(filename) {
+            _namInjectButton();
+            _namLoadMappings(filename);
+            if (_namEnabled) {
+                _namDuckGuitarStem();
+            }
+        },
+        afterShowScreen(id) {
+            if (id === 'plugin-nam_tone') _namInitScreen();
+        },
     };
-})();
+    if (hookState.installed) return;
+    hookState.installed = true;
 
-// ── showScreen Hook ────────────────────────────────────────────────────────
+    const origPlaySong = window.playSong;
+    hookState.basePlaySong = origPlaySong;
+    window.playSong = async function(filename, arrangement) {
+        await hookState.basePlaySong.call(this, filename, arrangement);
+        const impl = hookState.impl;
+        if (impl && typeof impl.afterPlaySong === 'function') impl.afterPlaySong(filename, arrangement);
+    };
 
-(function() {
     const origShowScreen = window.showScreen;
+    hookState.baseShowScreen = origShowScreen;
     window.showScreen = function(id) {
-        origShowScreen(id);
-        if (id === 'plugin-nam_tone') _namInitScreen();
+        hookState.baseShowScreen.call(this, id);
+        const impl = hookState.impl;
+        if (impl && typeof impl.afterShowScreen === 'function') impl.afterShowScreen(id);
     };
 })();
 
