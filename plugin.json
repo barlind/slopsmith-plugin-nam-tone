@@ -3,41 +3,38 @@
   "name": "NAM Tone Engine",
   "version": "1.1.0",
   "private": false,
-  "standards": ["capability-pipelines.v1", "plugin-runtime-idempotent.v1"],
+  "standards": ["capability-pipelines.v1", "plugin-runtime-idempotent.v1", "profiles.v1", "settings-packs.v1"],
   "nav": { "label": "NAM", "screen": "nam-tone" },
   "screen": "screen.html",
   "script": "screen.js",
+  "settings": { "html": "settings.html" },
+  "routes": "routes.py",
+  "settings_schema": {
+    "schema_version": "1",
+    "packable_keys": ["alwaysMuteGuitarStemWhileAmpOn", "respectManualStemUnmute", "diagnosticsLevel"]
+  },
+  "ui": {
+    "ui.navigation": [{ "id": "nam-tone-nav", "region": "plugins", "label": "NAM" }],
+    "ui.plugin-screens": [{ "id": "nam-tone-screen", "region": "plugin-screens", "label": "NAM Tone Engine" }],
+    "settings": [{ "id": "nam-tone-settings", "region": "plugin-settings", "label": "NAM Tone Engine" }]
+  },
   "capabilities": {
     "stems": {
       "roles": ["requester", "observer"],
-      "commands": ["mute", "restore"],
-      "events": ["provider-ready", "provider-unavailable", "state-changed", "user-override"],
-      "order": { "after": ["stems"] },
+      "commands": ["mute", "restore", "list", "inspect"],
+      "events": ["stems.ready", "stems.manual-unmute", "claim:created", "claim:released"],
       "mode": "active",
-      "compatibility": "degrade-noop"
-    },
-    "audio-monitoring": {
-      "roles": ["requester"],
-      "commands": ["start", "stop"],
-      "mode": "optional",
-      "compatibility": "degrade-noop"
+      "compatibility": "legacy-window-shim"
     },
     "audio-mix": {
-      "roles": ["contributor"],
-      "commands": ["register-participant"],
+      "roles": ["provider", "requester"],
+      "events": ["amp.enabled", "amp.disabled"],
       "mode": "active",
-      "compatibility": "none"
-    },
-    "ui.player-controls": {
-      "roles": ["contributor"],
-      "commands": ["register-contribution"],
-      "mode": "active",
-      "compatibility": "none"
+      "compatibility": "legacy-window-shim"
     }
   },
-  "settings": {
-    "html": "settings.html",
-    "server_files": ["nam_tone.db", "nam_models/", "nam_irs/"]
-  },
-  "routes": "routes.py"
+  "domains": {
+    "backend.routes": { "legacy_source": "routes" },
+    "audio-mix": [{ "id": "nam-tone-amp", "role": "provider" }]
+  }
 }

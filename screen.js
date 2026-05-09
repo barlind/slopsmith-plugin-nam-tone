@@ -1208,16 +1208,17 @@ let _namStemClaimId = null;
 let _namLastStemDuckResult = null;
 let _namStemDuckingShim = false;
 const _namRegisteredStemShims = new Set();
+const NAM_STEM_CLAIM_ID = 'nam.amp-active';
 
 function _namCapabilities() {
     const api = window.slopsmith && window.slopsmith.capabilities;
-    return api && typeof api.command === 'function' ? api : null;
+    return api && typeof api.dispatch === 'function' ? api : null;
 }
 
-function _namEnsureStemClaim() {
-    if (!_namStemClaimId) {
-        const token = Math.random().toString(36).slice(2);
-        _namStemClaimId = `nam_tone:${Date.now()}:${token}`;
+function _namEnsureStemClaim(api) {
+    if (!_namStemClaimId) _namStemClaimId = NAM_STEM_CLAIM_ID;
+    if (api && typeof api.claim === 'function') {
+        api.claim({ capability: 'stems', claimId: _namStemClaimId, owner: 'nam_tone', reason: 'NAM AMP is enabled' });
     }
     return _namStemClaimId;
 }
@@ -1248,7 +1249,6 @@ function _namStemState() {
         }
     }
     if (stemsApi && Array.isArray(stemsApi.stemState) && stemsApi.stemState.length) return stemsApi.stemState;
-    if (Array.isArray(window._stemsState) && window._stemsState.length) return window._stemsState;
     const domStems = _namDomStemState();
     if (domStems.length) return domStems;
     return [];
@@ -1425,12 +1425,15 @@ function _namDuckGuitarStem(attempts = 20) {
     const api = _namCapabilities();
     if (!api) return _namDuckGuitarStemLegacy(attempts);
 
-    const claimId = _namEnsureStemClaim();
-    api.command('stems', 'mute', {
-        requester: 'nam_tone',
+    const claimId = _namEnsureStemClaim(api);
+    api.dispatch({
+        capability: 'stems',
+        command: 'mute',
+        source: 'nam_tone',
         origin: 'automation',
         reason: 'NAM AMP is enabled',
-        payload: {
+        claim: { claimId, owner: 'nam_tone' },
+        args: {
             claimId,
             filename: _namCurrentFilename,
             target: { kind: 'guitar' },
@@ -1443,11 +1446,15 @@ function _namDuckGuitarStem(attempts = 20) {
             _namUpdateCapabilityDuckedState(result);
             return;
         }
-        if (result && result.outcome === 'denied') return;
-        _namDuckGuitarStemLegacy(attempts);
+        if (result && ['denied', 'overridden'].includes(result.outcome)) return;
+        if (result && ['no-owner', 'no-handler'].includes(result.status)) {
+            _namScheduleStemDuckRetry(attempts);
+            return;
+        }
+        _namLastStemDuckResult = result;
     }).catch(err => {
         _namLastStemDuckResult = { outcome: 'failed', reason: err && err.message ? err.message : String(err) };
-        _namDuckGuitarStemLegacy(attempts);
+        _namScheduleStemDuckRetry(attempts);
     });
     return true;
 }
@@ -1530,14 +1537,19 @@ async function _namRestoreGuitarStem() {
     const hasLegacyDucks = _namDuckedStems.some(d => !d.viaCapability);
     if (api && claimId) {
         try {
-            _namLastStemDuckResult = await api.command('stems', 'restore', {
-                requester: 'nam_tone',
+            _namLastStemDuckResult = await api.dispatch({
+                capability: 'stems',
+                command: 'restore',
+                source: 'nam_tone',
                 origin: 'automation',
                 reason: 'NAM AMP is disabled',
-                payload: { claimId, filename: _namCurrentFilename, reason: 'NAM AMP is disabled' },
+                claim: { claimId, owner: 'nam_tone' },
+                args: { claimId, filename: _namCurrentFilename, reason: 'NAM AMP is disabled' },
             });
         } catch (err) {
             _namLastStemDuckResult = { outcome: 'failed', reason: err && err.message ? err.message : String(err) };
+        } finally {
+            if (typeof api.release === 'function') api.release({ capability: 'stems', claimId, owner: 'nam_tone' });
         }
     }
 
